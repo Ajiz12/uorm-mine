@@ -34,6 +34,7 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 STATE_FILE = BASE_DIR / "uorm_state.json"
 TOKENS_FILE = BASE_DIR / "uorm_tokens.json"
+PID_FILE = BASE_DIR / ".bot.pid"
 
 SUPABASE_URL = "https://tnxxckqqhwwajeljrnnl.supabase.co"
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRueHhja3FxaHd3YWplbGpybm5sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY3MzM0MDksImV4cCI6MjEwMjMwOTQwOX0.aLlLRxaltsW6Retxl4ddNKF9WkSHUJOiHVEsrcQvAJk"
@@ -45,11 +46,12 @@ SKIP_MISSION_KEYS = {"invite_friend"}          # referral
 SKIP_MISSION_IDS = {"daily_invite", "weekly_invite"}   # referral — JANGAN sentuh
 
 # Interval
-MINING_CHECK_INTERVAL = 60          # detik — cek status mining
-LUCKY_BOX_INTERVAL = 4 * 3600       # 4 jam
-LEADERBOARD_INTERVAL = 24 * 3600    # 24 jam
-REPORT_INTERVAL = 4 * 3600          # 4 jam — notif status berkala
-TOKEN_REFRESH_MARGIN = 300          # refresh 5 menit sebelum expired
+MINING_CHECK_INTERVAL = 4 * 3600       # 4 jam — bareng lucky box & boost
+LOOP_INTERVAL = 300                    # 5 menit — tick loop internal
+LUCKY_BOX_INTERVAL = 4 * 3600          # 4 jam
+LEADERBOARD_INTERVAL = 24 * 3600       # 24 jam
+REPORT_INTERVAL = 4 * 3600             # 4 jam — notif status berkala
+TOKEN_REFRESH_MARGIN = 300             # refresh 5 menit sebelum expired
 
 TG_MAX_PER_DAY = 1                  # notif Telegram per hari (notif biasa)
                                      # laporan status & boost selalu force=True
@@ -513,19 +515,54 @@ MINING_COL_CANDIDATES = {
     "active": ["claimed", "is_active", "active", "status", "is_running", "running"],
 }
 
-def check_mining(client: SupabaseClient, state: dict, schema: dict = None) -> bool:
+def claim_mining(client: SupabaseClient, state: dict, session_id: str = None) -> float:
     """
-    Cek status mining. Kalau tidak aktif, start.
+    Claim sesi mining yang sudah selesai (24 jam).
+    RPC asli: claim_mining_session(p_session_id uuid)
+    Return jumlah koin yang di-claim (0 kalau gagal).
+    """
+    if not session_id:
+        session_id = state.get("mining", {}).get("session_id")
+    if not session_id:
+        return 0.0
+
+    res = client.rpc("claim_mining_session", {"p_session_id": session_id})
+    if isinstance(res, dict):
+        if res.get("ok") or res.get("amount") is not None:
+            amt = float(res.get("amount") or res.get("coins") or res.get("reward") or 0.0)
+            log.info("[mining] CLAIM BERHASIL: %s UORM", amt)
+            return amt
+        msg = (res.get("message") or "").lower()
+        if "already claimed" in msg:
+            log.info("[mining] sesi sudah di-claim sebelumnya")
+            return 0.0
+        if "not finished" in msg or "belum" in msg or "active" in msg:
+            log.info("[mining] sesi belum selesai — %s", res.get("message"))
+            return 0.0
+    log.info("[mining] claim -> %s", str(res)[:200])
+    return 0.0
+
+
+def check_mining(client: SupabaseClient, state: dict, schema: dict = None,
+                 force: bool = False) -> bool:
+    """
+    Cek status mining. Interval 4 jam (bareng lucky box & boost).
+    - Sesi expired (24 jam lewat) -> claim, lalu start sesi baru
+    - Tidak ada sesi aktif -> start sesi baru
     Return True kalau mining aktif.
     """
     m = state["mining"]
-    m["last_check"] = now_ts()
+    now = now_ts()
+
+    # throttle 4 jam — kecuali force (dipanggil saat bot baru start)
+    if not force and m.get("last_check") and now - m["last_check"] < MINING_CHECK_INTERVAL:
+        return bool(m.get("active"))
+
+    m["last_check"] = now
 
     # kolom dari discovery (kalau ada)
     cols = (schema or {}).get("tables", {}).get("mining_sessions", {}).get("columns")
-    c_user = _pick_col(cols, MINING_COL_CANDIDATES["user"], "user_id")
     c_start = _pick_col(cols, MINING_COL_CANDIDATES["started"], "started_at")
-    c_end = _pick_col(cols, MINING_COL_CANDIDATES["ended"], "ended_at")
     c_rate = _pick_col(cols, MINING_COL_CANDIDATES["rate"], "rate")
     c_total = _pick_col(cols, MINING_COL_CANDIDATES["total"], "total_mined")
 
@@ -540,7 +577,6 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None) -> bo
         last = rows[0]
         m["started_at"] = last.get(c_start)
         m["session_id"] = last.get("id")
-        # UORM: claimed=False -> sesi masih aktif; claimed=True -> sudah di-claim
         m["active"] = not last.get("claimed", False)
         if last.get(c_rate):
             try:
@@ -548,7 +584,6 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None) -> bo
                 m["rate_per_hour"] = float(last[c_rate])
             except (TypeError, ValueError):
                 pass
-        # ambil rate terbaru dari segment terakhir kalau ada
         segs = last.get("segments")
         if isinstance(segs, list) and segs:
             try:
@@ -560,7 +595,6 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None) -> bo
                 m["total_mined"] = float(last[c_total])
             except (TypeError, ValueError):
                 pass
-        # status boost aktif (untuk notif ✅/❎)
         m["boost_expires_at"] = last.get("boost_expires_at")
         m["boost_multiplier"] = last.get("boost_multiplier") or 1
     else:
@@ -571,7 +605,18 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None) -> bo
                  m["started_at"], m["rate"], m["total_mined"])
         return True
 
-    # belum ada sesi aktif — pakai RPC asli: start_mining_session(p_rate_per_hour)
+    # ── sesi tidak aktif ──
+    # Kalau ada sesi lama yang belum di-claim, claim dulu
+    if rows and not rows[0].get("claimed"):
+        amt = claim_mining(client, state, rows[0].get("id"))
+        if amt > 0:
+            tg_send(
+                f"⛏️ <b>UORM Mining Claim</b>\n"
+                f"Sesi 24 jam selesai — dapat <b>{_fmt_coins(amt)} UORM</b>",
+                state, force=True,
+            )
+
+    # start sesi baru
     log.info("[mining] tidak aktif — start via RPC start_mining_session")
     res = client.rpc("start_mining_session", {"p_rate_per_hour": m.get("rate") or 1.371825})
     if isinstance(res, dict) and (res.get("ok") or res.get("id") or res.get("session_id")):
@@ -580,10 +625,15 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None) -> bo
         m["started_at"] = datetime.now(timezone.utc).isoformat()
         m["session_id"] = res.get("id") or res.get("session_id")
         m["rate_per_hour"] = res.get("rate_per_hour", m.get("rate") or 1.371825)
+        tg_send(
+            f"▶️ <b>UORM Mining Mulai</b>\n"
+            f"Rate: {_fmt_coins(m['rate_per_hour'])} UORM/jam\n"
+            f"Siklus 24 jam — claim otomatis.",
+            state, force=True,
+        )
         return True
     if isinstance(res, dict) and "message" in res:
         log.info("[mining] start_mining_session -> %s", res["message"])
-        # "session already active" berarti sebenarnya aktif — re-sync
         if "already active" in res["message"]:
             m["active"] = True
             return True
@@ -1053,6 +1103,12 @@ def main():
 
     log.info("════════ UORM Auto Mining Bot start ════")
 
+    # tulis PID file untuk watchdog
+    try:
+        PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+
     client = SupabaseClient()
     if not client.ensure_token():
         log.error("Tidak bisa auth — isi .env lalu jalankan: python3 uorm_mine.py --login")
@@ -1077,8 +1133,8 @@ def main():
             # token refresh tiap iterasi
             client.ensure_token()
 
-            # 1. mining
-            mining_ok = check_mining(client, state, schema)
+            # 1. mining (interval 4 jam — bareng lucky box & boost)
+            mining_ok = check_mining(client, state, schema, force=True)
 
             # 2. lucky box (tiap 4 jam)
             check_lucky_box(client, state)
@@ -1115,7 +1171,14 @@ def main():
             log.exception("Loop error: %s", e)
             time.sleep(60)
 
-        time.sleep(MINING_CHECK_INTERVAL)
+        time.sleep(LOOP_INTERVAL)
+
+    # bersihkan PID file saat keluar
+    try:
+        if PID_FILE.exists():
+            PID_FILE.unlink()
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
