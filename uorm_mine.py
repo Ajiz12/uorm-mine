@@ -724,27 +724,54 @@ def check_lucky_box(client: SupabaseClient, state: dict):
     lb = state["lucky_box"]
     now = now_ts()
 
-    if lb["next_claim"] and now < lb["next_claim"]:
-        sisa = int(lb["next_claim"] - now)
-        log.info("[luckybox] cooldown, sisa %d menit", sisa // 60)
-        return
-
-    # cek status dulu
+    # ── SELALU cek server dulu, jangan percaya timer lokal ──
+    # Timer lokal bisa jadi tidak sinkron (bot restart, jam VPS geser,
+    # claim dari HP). Server adalah sumber kebenaran: kalau can_open
+    # true, klaim — jangan sampai ke-skip karena state lokal.
     status = client.rpc("get_lucky_box_status")
-    if status is not None:
-        log.info("[luckybox] status: %s", str(status)[:200])
+    if isinstance(status, dict):
+        can_open = status.get("can_open")
+        remaining_ms = status.get("remaining_ms")
+        if can_open is False:
+            # sinkronkan cooldown dari server
+            if isinstance(remaining_ms, (int, float)) and remaining_ms > 0:
+                lb["next_claim"] = now + remaining_ms / 1000
+            sisa = int(lb["next_claim"] - now) if lb["next_claim"] > now else 0
+            log.info("[luckybox] cooldown, sisa %d menit", sisa // 60)
+            return
+        # can_open True (atau field tidak ada) — lanjut klaim
+    else:
+        # status gagal — fallback ke timer lokal
+        if lb["next_claim"] and now < lb["next_claim"]:
+            sisa = int(lb["next_claim"] - now)
+            log.info("[luckybox] status gagal, pakai timer lokal, sisa %d menit",
+                     sisa // 60)
+            return
 
     res = client.rpc("open_lucky_box")
     if res is not None:
         lb["last_claim"] = now
-        lb["next_claim"] = now + LUCKY_BOX_INTERVAL
+        # cooldown dari response server (paling akurat)
+        rem = res.get("remaining_ms") if isinstance(res, dict) else None
+        lb["next_claim"] = now + (rem / 1000 if isinstance(rem, (int, float)) and rem > 0
+                                  else LUCKY_BOX_INTERVAL)
         lb["total_claims"] += 1
         # nominal hadiah — simpan untuk notif
         if isinstance(res, dict):
             lb["last_amount"] = float(res.get("amount") or res.get("coins")
                                       or res.get("reward") or 0.0)
-        log.info("[luckybox] CLAIM BERHASIL: %s", str(res)[:300])
-        tg_send(f"🎁 <b>UORM Lucky Box</b>\nKlaim #{lb['total_claims']} berhasil!\n<code>{str(res)[:200]}</code>", state)
+        save_state(state)
+        log.info("[luckybox] CLAIM BERHASIL: %s UORM (next %s)",
+                 _fmt_coins(lb["last_amount"]),
+                 datetime.fromtimestamp(lb["next_claim"], tz=WIB).strftime("%H:%M WIB"))
+        tg_send(
+            f"🎁 <b>UORM Lucky Box</b>\n"
+            f"Klaim #{lb['total_claims']} berhasil!\n"
+            f"Hadiah: {_fmt_coins(lb['last_amount'])} UORM\n"
+            f"Total saldo: {_fmt_coins(res.get('total_coins', 0))} UORM\n"
+            f"Claim lagi: {datetime.fromtimestamp(lb['next_claim'], tz=WIB).strftime('%H:%M')} WIB",
+            state, force=True,
+        )
     else:
         # gagal — jangan spam, coba lagi 30 menit
         lb["next_claim"] = now + 1800
