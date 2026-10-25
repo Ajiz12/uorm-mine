@@ -1,0 +1,239 @@
+{
+  "tables": {
+    "missions": {
+      "columns": [
+        "id",
+        "title",
+        "description",
+        "type",
+        "reward_amount",
+        "requirement_count",
+        "requirement_key",
+        "url",
+        "sort_order",
+        "is_active"
+      ],
+      "sample": {
+        "id": "daily_open",
+        "title": "Daily Check-In",
+        "description": "Open Uorm today to keep your streak alive.",
+        "type": "daily",
+        "reward_amount": 0.75,
+        "requirement_count": 1,
+        "requirement_key": "open_app",
+        "url": null,
+        "sort_order": 10,
+        "is_active": true
+      }
+    },
+    "mining_sessions": {
+      "columns": [
+        "id",
+        "user_id",
+        "started_at",
+        "rate_per_hour",
+        "boost_multiplier",
+        "boost_expires_at",
+        "segments",
+        "claimed",
+        "claimed_at",
+        "claimed_amount",
+        "session_duration_ms"
+      ],
+      "sample": {
+        "id": "7c0e5c78-a0c7-4725-ac60-de9855cf89bb",
+        "user_id": "<your-user-uuid>",
+        "started_at": "2026-10-25T09:52:35.403215+00:00",
+        "rate_per_hour": 1.371825,
+        "boost_multiplier": 1,
+        "boost_expires_at": null,
+        "segments": [
+          {
+            "startedAt": 1792921955403,
+            "ratePerHour": 1.371825
+          },
+          {
+            "startedAt": 1792922304639,
+            "ratePerHour": 1.536444
+          }
+        ],
+        "claimed": false,
+        "claimed_at": null,
+        "claimed_amount": null,
+        "session_duration_ms": 86400000
+      }
+    },
+    "user_missions": {
+      "columns": [
+        "user_id",
+        "mission_id",
+        "progress",
+        "completed",
+        "claimed",
+        "period_key"
+      ],
+      "sample": {
+        "user_id": "<your-user-uuid>",
+        "mission_id": "daily_boost",
+        "progress": 0,
+        "completed": false,
+        "claimed": false,
+        "period_key": "2026-10-04"
+      }
+    },
+    "profiles": {
+      "columns": [
+        "id",
+        "username",
+        "avatar_url",
+        "rank_id",
+        "total_coins",
+        "lifetime_mined",
+        "referral_code",
+        "referred_by",
+        "streak_count",
+        "last_check_in_date",
+        "room_id",
+        "notifications_enabled",
+        "language",
+        "theme",
+        "created_at",
+        "xp",
+        "level",
+        "chat_streak_days",
+        "chat_streak_last_date",
+        "prestige_count",
+        "country",
+        "date_of_birth"
+      ],
+      "sample": {
+        "id": "d9105665-6b12-4323-b977-1ecffe9ac6d4",
+        "username": "Sabinus Ugwoke",
+        "avatar_url": "https://lh3.googleusercontent.com/a/ACg8ocLBLBxyTQHVz5QHvIn9HwnM_Ix40MKu6jBX7rhNYzDEtMR4sUNd=s96-c",
+        "rank_id": "platinum",
+        "total_coins": 1599.6377,
+        "lifetime_mined": 771.9377,
+        "referral_code": "D9105665",
+        "referred_by": "75603d5a-924b-4854-af3e-bd5c5a7f3bce",
+        "streak_count": 1,
+        "last_check_in_date": "2026-10-23",
+        "room_id": "<your-room-id>",
+        "notifications_enabled": true,
+        "language": "en",
+        "theme": "light",
+        "created_at": "2026-10-02T20:28:00.547876+00:00",
+        "xp": 0,
+        "level": 1,
+        "chat_streak_days": 0,
+        "chat_streak_last_date": null,
+        "prestige_count": 0,
+        "country": null,
+        "date_of_birth": null
+      }
+    },
+    "room_members": {
+      "columns": [
+        "room_id",
+        "user_id",
+        "joined_at"
+      ],
+      "sample": {
+        "room_id": "room_ac96bad015904baaaf720bf3d51d8c75",
+        "user_id": "<your-user-uuid>",
+        "joined_at": "2026-10-25T09:58:13.913788+00:00"
+      }
+    },
+    "room_messages": {
+      "columns": [
+        "id",
+        "room_id",
+        "user_id",
+        "username",
+        "content",
+        "created_at",
+        "image_url",
+        "reply_to_id",
+        "edited_at",
+        "deleted_at",
+        "image_width",
+        "image_height"
+      ],
+      "sample": {
+        "id": "ad5021cf-5107-4dfa-9817-7b22c4fe7a06",
+        "room_id": "room_ac96bad015904baaaf720bf3d51d8c75",
+        "user_id": "4d863552-8cce-4da6-a443-6407791af441",
+        "username": "Rhocmat Abdulloh",
+        "content": "tes",
+        "created_at": "2026-10-25T09:10:03.983804+00:00",
+        "image_url": null,
+        "reply_to_id": null,
+        "edited_at": null,
+        "deleted_at": null,
+        "image_width": null,
+        "image_height": null
+      }
+    },
+    "referrals": {
+      "columns": null,
+      "note": "status 200"
+    },
+    "announcements": {
+      "columns": [
+        "id",
+        "category",
+        "title",
+        "summary",
+        "body",
+        "image_url",
+        "read_minutes",
+        "sort_order",
+        "is_active",
+        "published_at",
+        "created_at",
+        "updated_at"
+      ],
+      "sample": {
+        "id": "601f6d1e-febe-4808-bab3-219e3aac4cb5",
+        "category": "Blog",
+        "title": "Room Boost tips for higher earnings",
+        "summary": "Chat in Room Chat to raise today’s activity boost and mine faster with your whole crew.",
+        "body": "Room Boost is one of the easiest ways to earn more while you mine. When your crew stays active in Room Chat, the room’s activity score rises, and that score unlocks a shared mining boost for everyone in the room.\n\nHow to qualify: send real messages of at least 5 characters. Short spam or emoji-only pings usually don’t count. Each member can only add a limited number of qualifying messages per day, so encourage different people in the room to chat instead of one person flooding the feed.\n\nAs activity climbs, Room Boost steps up in tiers: typically +5%, then +10%, and up to +15% on your room mining rate. The boost applies to the whole crew while mining is active, so a lively room helps every member earn more coins.\n\nTips for a stronger boost:\n• Keep conversations going throughout the day, not just one burst.\n• Invite active friends so more members can contribute qualifying messages.\n• Check your room info for the current boost tier and activity progress.\n\nStay chatty, stay consistent, and let Room Boost do the heavy lifting for your earnings.",
+        "image_url": "asset:images/announce/announce-room-boost.jpg",
+        "read_minutes": 4,
+        "sort_order": 0,
+        "is_active": true,
+        "published_at": "2026-09-30T18:19:03.575972+00:00",
+        "created_at": "2026-09-30T18:19:03.575972+00:00",
+        "updated_at": "2026-09-30T18:19:03.575972+00:00"
+      }
+    },
+    "app_config": {
+      "columns": [
+        "key",
+        "value",
+        "description",
+        "updated_at"
+      ],
+      "sample": {
+        "key": "ads.enabled",
+        "value": true,
+        "description": "Master switch for every rewarded placement",
+        "updated_at": "2026-08-29T18:27:52.891642+00:00"
+      }
+    },
+    "rooms": {
+      "columns": null,
+      "note": "status 403"
+    }
+  },
+  "rpcs": [
+    "open_lucky_box",
+    "claim_daily_bonus",
+    "get_missions",
+    "get_lucky_box_status",
+    "get_announcements",
+    "leave_room",
+    "get_leaderboard"
+  ],
+  "discovered_at": "2026-10-25T17:42:15.074887+07:00"
+}
