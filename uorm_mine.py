@@ -1132,6 +1132,8 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
     rp["last_sent"] = now
 
     text = (
+        "LAPOR BOSKUHHHH\n"
+        "\n"
         "UORM MINING BERHASIL ✅\n"
         "\n"
         f"💵 Total saldo: {_fmt_coins(total_coins)} UORM\n"
@@ -1140,7 +1142,7 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
         f"🥇 Peringkat: {rank_id}\n"
         f"🚀 Leadboard: {lb_pos}\n"
         "\n"
-        f"🤖 Claim lucky box selanjutnya {jam_next} WIB"
+        f"🤖 Next claim lucky box  {jam_next} WIB"
     )
 
     return tg_send(text, state, force=True)
@@ -1225,13 +1227,8 @@ def main():
     state = load_state()
     schema = discover_schema(client)
 
-    # notif start
-    tg_send(
-        f"⛏️ <b>UORM Bot Start</b>\n"
-        f"Waktu: {now_wib().strftime('%d %b %Y %H:%M')} WIB\n"
-        f"Misi: mining 24h, lucky box 4h, boost, misi, leaderboard",
-        state, force=True,
-    )
+    # laporan awal — format sama dengan laporan berkala
+    send_status_report(client, state, force=True)
 
     last_mission_sync = 0
     last_balance_check = 0
