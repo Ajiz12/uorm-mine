@@ -409,7 +409,7 @@ def tg_send(text: str, state: dict = None, force: bool = False):
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            json={"chat_id": chat_id, "text": text},
             timeout=20,
         )
         return r.status_code == 200
@@ -855,6 +855,29 @@ def complete_mission(client: SupabaseClient, mission_id: str, payload: dict = No
 # FITUR 5 — LEADERBOARD HARIAN
 # ═══════════════════════════════════════════════════════════════
 
+def count_profiles_above(client: SupabaseClient, coins: float):
+    """
+    Hitung jumlah user dengan koin > coins, pakai header
+    Prefer: count=exact. get_leaderboard cuma return top 100,
+    jadi posisi asli harus dihitung manual.
+    """
+    try:
+        r = client.session.get(
+            f"{SUPABASE_URL}/rest/v1/profiles",
+            params={"select": "total_coins", "total_coins": f"gt.{coins}"},
+            headers={"Prefer": "count=exact", "Range": "0-0"},
+            timeout=30,
+        )
+        if r.status_code in (200, 206):
+            cr = r.headers.get("Content-Range", "")
+            total = cr.rsplit("/", 1)[-1]
+            if total.isdigit():
+                return int(total)
+    except Exception as e:
+        log.warning("[leaderboard] count gagal: %s", e)
+    return None
+
+
 def update_leaderboard(client: SupabaseClient, state: dict):
     lb = state["leaderboard"]
     now = now_ts()
@@ -862,43 +885,38 @@ def update_leaderboard(client: SupabaseClient, state: dict):
     if lb["last_update"] and now - lb["last_update"] < LEADERBOARD_INTERVAL:
         return
 
-    rows = client.rpc_public("get_leaderboard", {})
-    if not rows:
-        log.warning("[leaderboard] gagal ambil data")
+    uid = client.tokens.get("user_id")
+    prof = client.rest_get("profiles", {
+        "select": "total_coins,rank_id",
+        "id": f"eq.{uid}", "limit": 1,
+    }) or []
+    if not prof:
+        log.warning("[leaderboard] profil tidak ditemukan")
         lb["last_update"] = now
         return
 
-    uid = client.tokens.get("user_id")
-    my = next((r for r in rows if r.get("id") == uid), None)
-    top = rows[0] if rows else {}
-
+    my_coins = float(prof[0].get("total_coins") or 0)
+    lb["my_coins"] = my_coins
+    lb["rank_id"] = prof[0].get("rank_id")
     lb["last_update"] = now
+
+    rows = client.rpc_public("get_leaderboard", {}) or []
+    my = next((r for r in rows if r.get("id") == uid), None)
+
     if my:
         lb["my_rank"] = rows.index(my) + 1
-        lb["my_coins"] = my.get("total_coins")
-        lb["rank_id"] = my.get("rank_id")
     else:
-        # user tidak masuk top-N — ambil saldo dari profiles, rank = None
-        prof = client.rest_get("profiles", {
-            "select": "total_coins,rank_id",
-            "id": f"eq.{uid}", "limit": 1,
-        }) or []
-        lb["my_rank"] = None
-        lb["my_coins"] = prof[0].get("total_coins") if prof else None
-        lb["rank_id"] = prof[0].get("rank_id") if prof else None
+        # tidak masuk top-N — hitung posisi asli via count eksplisit
+        above = count_profiles_above(client, my_coins)
+        lb["my_rank"] = (above + 1) if above is not None else None
+
+    top = rows[0] if rows else {}
     lb["top_coins"] = top.get("total_coins")
+    lb["total_users"] = (lb["my_rank"] or 0)  # fallback
 
     log.info("[leaderboard] rank=%s koin=%s (top: %s = %s)",
              lb["my_rank"], lb["my_coins"],
              top.get("username"), lb["top_coins"])
-
-    tg_send(
-        f"🏆 <b>UORM Leaderboard</b>\n"
-        f"Rank lo: {('#' + str(lb['my_rank'])) if lb['my_rank'] else 'di luar top ' + str(len(rows))}\n"
-        f"Koin lo: {lb['my_coins']}\n"
-        f"Teratas: {top.get('username')} ({lb['top_coins']})",
-        state,
-    )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1001,39 +1019,38 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
     else:
         boost_used, boost_limit = 0, 2
 
-    # ── lucky box: nominal terakhir + sisa cooldown ──
+    # ── lucky box: nominal terakhir + jam claim berikutnya (WIB) ──
     lb = state["lucky_box"]
     lb_amount = lb.get("last_amount", 0.0)
     if lb["next_claim"] and now < lb["next_claim"]:
-        sisa_menit = int((lb["next_claim"] - now) // 60)
-        lb_line = f"{_fmt_coins(lb_amount)} UORM (klaim lagi {sisa_menit // 60}j {sisa_menit % 60}m lagi)"
+        jam_next = datetime.fromtimestamp(lb["next_claim"], tz=WIB).strftime("%H:%M")
+        lb_line = f"{_fmt_coins(lb_amount)} UORM"
     else:
-        lb_line = f"{_fmt_coins(lb_amount)} UORM (siap dibuka)"
+        jam_next = "sekarang"
+        lb_line = f"{_fmt_coins(lb_amount)} UORM"
 
-    # ── leaderboard posisi ──
+    # ── leaderboard posisi (angka saja, tanpa saldo) ──
     ldb = state["leaderboard"]
     if ldb.get("my_rank"):
-        lb_pos = f"#{ldb['my_rank']} ({_fmt_coins(ldb.get('my_coins'))} UORM)"
+        lb_pos = f"#{ldb['my_rank']}"
     else:
-        lb_pos = f"di luar top 50 ({_fmt_coins(total_coins)} UORM)"
+        lb_pos = "-"
 
     rank_baru = rank_id != rp.get("last_rank_id")
     rp["last_rank_id"] = rank_id
     rp["last_sent"] = now
 
     text = (
-        f"<b>UORM MINING BERHASIL ✅</b>\n"
-        f"<i>{now_wib().strftime('%d %b %Y • %H:%M')} WIB</i>\n"
-        f"\n"
-        f"💵 <b>Total saldo:</b> {_fmt_coins(total_coins)} UORM\n"
-        f"📈 <b>Mining boost:</b> {'✅ aktif' if boost_aktif else '❎ tidak aktif'}"
-        f" ({boost_used}/{boost_limit} hari ini)\n"
-        f"📊 <b>Kotak keberuntungan:</b> {lb_line}\n"
-        f"🥇 <b>Peringkat:</b> {rank_id}\n"
-        f"🚀 <b>Leaderboard:</b> {lb_pos}"
+        "UORM MINING BERHASIL ✅\n"
+        "\n"
+        f"💵 Total saldo: {_fmt_coins(total_coins)} UORM\n"
+        f"📈 Mining boost: {'✅ Aktif' if boost_aktif else '❎ Tidak Aktif'}\n"
+        f"📊 Kotak keberuntungan: {lb_line}\n"
+        f"🥇 Peringkat: {rank_id}\n"
+        f"🚀 Leadboard: {lb_pos}\n"
+        "\n"
+        f"🤖 Claim lucky box selanjutnya {jam_next} WIB"
     )
-    if rank_baru and rp.get("last_rank_id") is not None:
-        text += f"\n\n🎉 <b>Rank naik jadi {rank_id}!</b>"
 
     return tg_send(text, state, force=True)
 
