@@ -49,6 +49,7 @@ SKIP_MISSION_IDS = {"daily_invite", "weekly_invite"}   # referral — JANGAN sen
 MINING_CHECK_INTERVAL = 4 * 3600       # 4 jam — bareng lucky box & boost
 LOOP_INTERVAL = 300                    # 5 menit — tick loop internal
 LUCKY_BOX_INTERVAL = 4 * 3600          # 4 jam
+DAILY_BONUS_INTERVAL = 24 * 3600       # 24 jam — daily login bonus
 LEADERBOARD_INTERVAL = 24 * 3600       # 24 jam
 REPORT_INTERVAL = 4 * 3600             # 4 jam — notif status berkala
 TOKEN_REFRESH_MARGIN = 300             # refresh 5 menit sebelum expired
@@ -127,6 +128,13 @@ DEFAULT_STATE = {
         "next_claim": 0,
         "total_claims": 0,
         "last_amount": 0.0,
+    },
+    "daily_bonus": {
+        "last_check": 0,
+        "last_claim_date": None,
+        "streak_day": 0,
+        "last_amount": 0.0,
+        "total_claimed": 0.0,
     },
     "missions": {
         "completed": [],
@@ -653,6 +661,62 @@ def _pick_col(known_cols, candidates, default):
 
 
 # ═══════════════════════════════════════════════════════════════
+# FITUR 1.5 — DAILY LOGIN BONUS 24 JAM
+# ═══════════════════════════════════════════════════════════════
+
+def check_daily_bonus(client: SupabaseClient, state: dict):
+    """
+    Klaim daily login bonus. Cek 1x per 24 jam.
+    Status asli ada di tabel daily_bonus_state (last_claim_date).
+    RPC: claim_daily_bonus() — tanpa param, pakai JWT.
+    """
+    db = state["daily_bonus"]
+    now = now_ts()
+
+    if db["last_check"] and now - db["last_check"] < DAILY_BONUS_INTERVAL:
+        return
+    db["last_check"] = now
+
+    uid = client.tokens.get("user_id")
+
+    # cek status dari tabel asli — lebih akurat daripada state lokal
+    rows = client.rest_get("daily_bonus_state", {
+        "select": "last_claim_date,last_claimed_day",
+        "user_id": f"eq.{uid}", "limit": 1,
+    }) or []
+    today = now_wib().strftime("%Y-%m-%d")
+    if rows and rows[0].get("last_claim_date") == today:
+        db["last_claim_date"] = today
+        db["streak_day"] = rows[0].get("last_claimed_day", db["streak_day"])
+        log.info("[daily bonus] sudah diklaim hari ini (streak day %s)",
+                 db["streak_day"])
+        return
+
+    r = client.rpc("claim_daily_bonus")
+    if r is None:
+        return
+
+    amount = 0.0
+    if isinstance(r, dict):
+        amount = float(r.get("amount") or r.get("coins")
+                       or r.get("reward") or r.get("total_coins") or 0)
+        db["streak_day"] = r.get("day") or r.get("streak_day") or r.get("day_number")
+
+    db["last_claim_date"] = today
+    db["last_amount"] = amount
+    db["total_claimed"] += amount
+    save_state(state)
+
+    log.info("[daily bonus] BERHASIL klaim %s UORM", _fmt_coins(amount))
+    tg_send(
+        f"🎁 <b>UORM Daily Bonus</b>\n"
+        f"Streak: hari ke-{db['streak_day']}\n"
+        f"Hadiah: {_fmt_coins(amount)} UORM\n"
+        f"Waktu: {now_wib().strftime('%d %b %Y %H:%M')} WIB",
+        state, force=True,
+    )
+
+
 # FITUR 2 — LUCKY BOX 4 JAM
 # ═══════════════════════════════════════════════════════════════
 
@@ -1153,21 +1217,24 @@ def main():
             # 1. mining (interval 4 jam — bareng lucky box & boost)
             mining_ok = check_mining(client, state, schema, force=True)
 
-            # 2. lucky box (tiap 4 jam)
+            # 2. daily login bonus (tiap 24 jam)
+            check_daily_bonus(client, state)
+
+            # 3. lucky box (tiap 4 jam)
             check_lucky_box(client, state)
 
-            # 3. misi (tiap 30 menit)
+            # 4. misi (tiap 30 menit)
             if now_ts() - last_mission_sync > 1800:
                 sync_missions(client, state)
                 last_mission_sync = now_ts()
 
-            # 4. leaderboard (tiap 24 jam)
+            # 5. leaderboard (tiap 24 jam)
             update_leaderboard(client, state)
 
-            # 5. auto-boost — aktifkan kalau slot harian tersedia
+            # 6. auto-boost — aktifkan kalau slot harian tersedia
             auto_boost(client, state)
 
-            # 6. laporan status (tiap 4 jam)
+            # 7. laporan status (tiap 4 jam)
             send_status_report(client, state)
 
             # 7. monitor saldo (tiap 10 menit)
