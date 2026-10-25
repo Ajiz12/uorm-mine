@@ -97,6 +97,7 @@ Watchdog (cron tiap 5 menit):
 | `apply_mining_boost` | `p_session_id`, `p_multiplier`, `p_duration_ms`, `p_boosted_rate` | auth |
 | `claim_mission` | `p_mission_id` | auth |
 | `claim_mining_session` | `p_session_id` | auth |
+| `prestige_chat` | — | auth (butuh level 50 — belum relevan untuk akun silver) |
 
 ### Edge Function
 
