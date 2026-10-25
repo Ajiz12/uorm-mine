@@ -83,15 +83,32 @@ Watchdog (cron tiap 5 menit):
 
 ### RPC
 
-| Fungsi | Akses |
-|--------|-------|
-| `get_leaderboard` | publik |
-| `open_lucky_box` | auth |
-| `claim_daily_bonus` | auth |
-| `get_missions` | auth |
-| `get_lucky_box_status` | auth |
-| `get_announcements` | auth |
-| `leave_room` | auth |
+| Fungsi | Parameter | Akses |
+|--------|-----------|-------|
+| `get_leaderboard` | `p_limit` | publik |
+| `open_lucky_box` | — | auth |
+| `claim_daily_bonus` | — | auth |
+| `get_missions` | — | auth |
+| `get_lucky_box_status` | — | auth |
+| `get_announcements` | — | auth |
+| `leave_room` | — | auth |
+| `get_boost_status` | — | auth |
+| `start_mining_session` | `p_rate_per_hour` | auth |
+| `apply_mining_boost` | `p_session_id`, `p_multiplier`, `p_duration_ms`, `p_boosted_rate` | auth |
+| `claim_mission` | `p_mission_id` | auth |
+| `claim_mining_session` | `p_session_id` | auth |
+
+### Edge Function
+
+| Fungsi | Parameter | Keterangan |
+|--------|-----------|------------|
+| `claim-mining` | `sessionId` (camelCase) | Alternatif claim mining |
+
+**Catatan penting:** semua RPC pakai prefix parameter `p_` (konvensi PL/pgSQL). `apply_mining_boost` punya **2 overload** — kalau tidak kirim keempat parameter, PostgREST balas `PGRST203` (tidak bisa pilih kandidat).
+
+### Cara endpoint ditemukan
+
+Brute-force 15.590 nama RPC gagal total. Yang berhasil: panggil RPC dengan nama yang **typo dekat** (misal `start_minin`), lalu baca hint Postgres *"Perhaps you meant to call the function public.start_mining_session"*. Postgres sendiri yang membocorkan nama fungsi aslinya.
 
 ### Misi aktif (19)
 
@@ -104,5 +121,7 @@ Watchdog (cron tiap 5 menit):
 
 ## Catatan
 
-- Tidak ada `start_mining` / `boost_mining` / `complete_mission` RPC di database. Mining, boost, dan misi dikerjakan lewat **operasi tabel langsung** (INSERT/UPDATE) — kolomnya dipetakan otomatis oleh `--discover` setelah login.
+- Semua operasi mining/boost/misi pakai **RPC asli** — tidak ada INSERT/UPDATE langsung ke tabel (RLS menolak semua).
 - APK adalah Flutter AOT tanpa native code (`libapp.so` tidak ada), jadi reverse engineering terbatas pada layer Supabase.
+- Boost di app lewat rewarded ad (GamePix), tapi server hanya mencatat hasilnya via `apply_mining_boost` — tidak ada verifikasi iklan di backend. Limit 2 boost/hari dicek oleh `get_boost_status`.
+- Pola kenaikan rate per boost di server: +12% dan +15%. Bot pakai multiplier default 1.15.
