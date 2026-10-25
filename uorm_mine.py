@@ -48,9 +48,11 @@ SKIP_MISSION_IDS = {"daily_invite", "weekly_invite"}   # referral — JANGAN sen
 MINING_CHECK_INTERVAL = 60          # detik — cek status mining
 LUCKY_BOX_INTERVAL = 4 * 3600       # 4 jam
 LEADERBOARD_INTERVAL = 24 * 3600    # 24 jam
+REPORT_INTERVAL = 4 * 3600          # 4 jam — notif status berkala
 TOKEN_REFRESH_MARGIN = 300          # refresh 5 menit sebelum expired
 
-TG_MAX_PER_DAY = 1                  # notif Telegram per hari
+TG_MAX_PER_DAY = 1                  # notif Telegram per hari (notif biasa)
+                                     # laporan status & boost selalu force=True
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -113,11 +115,16 @@ DEFAULT_STATE = {
         "last_check": 0,
         "rate": 0.0,
         "total_mined": 0.0,
+        "session_id": None,
+        "rate_per_hour": 0.0,
+        "boost_expires_at": None,
+        "boost_multiplier": 1,
     },
     "lucky_box": {
         "last_claim": 0,
         "next_claim": 0,
         "total_claims": 0,
+        "last_amount": 0.0,
     },
     "missions": {
         "completed": [],
@@ -129,15 +136,21 @@ DEFAULT_STATE = {
         "my_rank": None,
         "my_coins": None,
         "top_coins": None,
+        "rank_id": None,
     },
     "telegram": {
         "sent_today": 0,
         "sent_date": None,
+        "last_report": 0,
     },
     "balance": {
         "last_total": 0.0,
         "window_start": 0,
         "window_min": 0.0,
+    },
+    "report": {
+        "last_sent": 0,
+        "last_rank_id": None,
     },
 }
 
@@ -547,6 +560,9 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None) -> bo
                 m["total_mined"] = float(last[c_total])
             except (TypeError, ValueError):
                 pass
+        # status boost aktif (untuk notif ✅/❎)
+        m["boost_expires_at"] = last.get("boost_expires_at")
+        m["boost_multiplier"] = last.get("boost_multiplier") or 1
     else:
         m["active"] = False
 
@@ -609,6 +625,10 @@ def check_lucky_box(client: SupabaseClient, state: dict):
         lb["last_claim"] = now
         lb["next_claim"] = now + LUCKY_BOX_INTERVAL
         lb["total_claims"] += 1
+        # nominal hadiah — simpan untuk notif
+        if isinstance(res, dict):
+            lb["last_amount"] = float(res.get("amount") or res.get("coins")
+                                      or res.get("reward") or 0.0)
         log.info("[luckybox] CLAIM BERHASIL: %s", str(res)[:300])
         tg_send(f"🎁 <b>UORM Lucky Box</b>\nKlaim #{lb['total_claims']} berhasil!\n<code>{str(res)[:200]}</code>", state)
     else:
@@ -806,6 +826,7 @@ def update_leaderboard(client: SupabaseClient, state: dict):
     if my:
         lb["my_rank"] = rows.index(my) + 1
         lb["my_coins"] = my.get("total_coins")
+        lb["rank_id"] = my.get("rank_id")
     else:
         # user tidak masuk top-N — ambil saldo dari profiles, rank = None
         prof = client.rest_get("profiles", {
@@ -814,6 +835,7 @@ def update_leaderboard(client: SupabaseClient, state: dict):
         }) or []
         lb["my_rank"] = None
         lb["my_coins"] = prof[0].get("total_coins") if prof else None
+        lb["rank_id"] = prof[0].get("rank_id") if prof else None
     lb["top_coins"] = top.get("total_coins")
 
     log.info("[leaderboard] rank=%s koin=%s (top: %s = %s)",
@@ -872,6 +894,131 @@ def check_balance_growth(client: SupabaseClient, state: dict):
         b["window_min"] = total
 
     b["last_total"] = total
+
+
+# ═══════════════════════════════════════════════════════════════
+# NOTIFIKASI STATUS 4 JAMAN
+# ═══════════════════════════════════════════════════════════════
+
+def _fmt_coins(v) -> str:
+    """Format angka koin — buang nol desimal yang tidak perlu."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "0"
+    if f == int(f):
+        return f"{int(f):,}".replace(",", ".")
+    return f"{f:,.3f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _boost_aktif(state: dict) -> bool:
+    """True kalau boost masih aktif (boost_expires_at belum lewat)."""
+    exp = state.get("mining", {}).get("boost_expires_at")
+    if not exp:
+        return False
+    try:
+        exp_dt = datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+        return exp_dt > datetime.now(timezone.utc)
+    except (ValueError, TypeError):
+        return False
+
+
+def send_status_report(client: SupabaseClient, state: dict, force: bool = False):
+    """
+    Kirim laporan status UORM ke Telegram.
+    Interval: setiap 4 jam, atau force=True.
+    """
+    now = now_ts()
+    rp = state["report"]
+
+    if not force and rp["last_sent"] and now - rp["last_sent"] < REPORT_INTERVAL:
+        return False
+
+    uid = client.tokens.get("user_id")
+
+    # ── saldo & rank dari profiles ──
+    prof = client.rest_get("profiles", {
+        "select": "total_coins,rank_id", "id": f"eq.{uid}", "limit": 1,
+    }) or []
+    total_coins = prof[0].get("total_coins", 0) if prof else 0
+    rank_id = prof[0].get("rank_id", "-") if prof else "-"
+
+    # ── boost status ──
+    boost_aktif = _boost_aktif(state)
+    bs = client.rpc("get_boost_status")
+    if isinstance(bs, dict):
+        boost_used, boost_limit = bs.get("used", 0), bs.get("limit", 2)
+    else:
+        boost_used, boost_limit = 0, 2
+
+    # ── lucky box: nominal terakhir + sisa cooldown ──
+    lb = state["lucky_box"]
+    lb_amount = lb.get("last_amount", 0.0)
+    if lb["next_claim"] and now < lb["next_claim"]:
+        sisa_menit = int((lb["next_claim"] - now) // 60)
+        lb_line = f"{_fmt_coins(lb_amount)} UORM (klaim lagi {sisa_menit // 60}j {sisa_menit % 60}m lagi)"
+    else:
+        lb_line = f"{_fmt_coins(lb_amount)} UORM (siap dibuka)"
+
+    # ── leaderboard posisi ──
+    ldb = state["leaderboard"]
+    if ldb.get("my_rank"):
+        lb_pos = f"#{ldb['my_rank']} ({_fmt_coins(ldb.get('my_coins'))} UORM)"
+    else:
+        lb_pos = f"di luar top 50 ({_fmt_coins(total_coins)} UORM)"
+
+    rank_baru = rank_id != rp.get("last_rank_id")
+    rp["last_rank_id"] = rank_id
+    rp["last_sent"] = now
+
+    text = (
+        f"<b>UORM MINING BERHASIL ✅</b>\n"
+        f"<i>{now_wib().strftime('%d %b %Y • %H:%M')} WIB</i>\n"
+        f"\n"
+        f"💵 <b>Total saldo:</b> {_fmt_coins(total_coins)} UORM\n"
+        f"📈 <b>Mining boost:</b> {'✅ aktif' if boost_aktif else '❎ tidak aktif'}"
+        f" ({boost_used}/{boost_limit} hari ini)\n"
+        f"📊 <b>Kotak keberuntungan:</b> {lb_line}\n"
+        f"🥇 <b>Peringkat:</b> {rank_id}\n"
+        f"🚀 <b>Leaderboard:</b> {lb_pos}"
+    )
+    if rank_baru and rp.get("last_rank_id") is not None:
+        text += f"\n\n🎉 <b>Rank naik jadi {rank_id}!</b>"
+
+    return tg_send(text, state, force=True)
+
+
+# ═══════════════════════════════════════════════════════════════
+# AUTO-BOOST — aktifkan begitu slot harian tersedia
+# ═══════════════════════════════════════════════════════════════
+
+def auto_boost(client: SupabaseClient, state: dict):
+    """
+    Cek tiap loop: kalau boost tidak aktif DAN slot harian masih ada,
+    langsung aktifkan. Kalau boost sudah aktif, biarkan sampai expired.
+    """
+    if not state.get("mining", {}).get("active"):
+        return
+
+    # sudah aktif — jangan boros slot
+    if _boost_aktif(state):
+        return
+
+    st = client.rpc("get_boost_status")
+    if not isinstance(st, dict):
+        return
+    used, limit = st.get("used", 0), st.get("limit", 2)
+    if used >= limit:
+        return
+
+    log.info("[boost] slot tersedia (%d/%d) — aktifkan", used, limit)
+    if boost_mining(client, state):
+        tg_send(
+            f"📈 <b>UORM Boost Aktif</b>\n"
+            f"Rate: {state['mining'].get('rate_per_hour')} UORM/jam\n"
+            f"Slot boost: {used + 1}/{limit} hari ini",
+            state, force=True,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -944,7 +1091,13 @@ def main():
             # 4. leaderboard (tiap 24 jam)
             update_leaderboard(client, state)
 
-            # 5. monitor saldo (tiap 10 menit)
+            # 5. auto-boost — aktifkan kalau slot harian tersedia
+            auto_boost(client, state)
+
+            # 6. laporan status (tiap 4 jam)
+            send_status_report(client, state)
+
+            # 7. monitor saldo (tiap 10 menit)
             if now_ts() - last_balance_check > 600:
                 check_balance_growth(client, state)
                 last_balance_check = now_ts()
