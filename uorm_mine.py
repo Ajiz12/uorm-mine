@@ -50,7 +50,7 @@ MINING_CHECK_INTERVAL = 10 * 60       # 10 menit — claim tepat saat 24 jam hab
 LOOP_INTERVAL = 300                    # 5 menit — tick loop internal
 LUCKY_BOX_INTERVAL = 4 * 3600          # 4 jam
 DAILY_BONUS_INTERVAL = 24 * 3600       # 24 jam — daily login bonus
-LEADERBOARD_INTERVAL = 24 * 3600       # 24 jam
+LEADERBOARD_INTERVAL = 2 * 3600        # 2 jam — posisi cepat berubah
 REPORT_INTERVAL = 4 * 3600             # 4 jam — notif status berkala
 TOKEN_REFRESH_MARGIN = 300             # refresh 5 menit sebelum expired
 
@@ -1069,12 +1069,39 @@ def count_profiles_above(client: SupabaseClient, coins: float):
     return None
 
 
-def update_leaderboard(client: SupabaseClient, state: dict):
+def _count_profiles_below(client: SupabaseClient, coins: float):
+    """
+    Hitung jumlah user dengan koin < coins (mirror count_profiles_above).
+    Dipakai untuk menghitung total peserta leaderboard.
+    """
+    try:
+        r = client.session.get(
+            f"{SUPABASE_URL}/rest/v1/profiles",
+            params={"select": "total_coins", "total_coins": f"lt.{coins}"},
+            headers={"Prefer": "count=exact", "Range": "0-0"},
+            timeout=30,
+        )
+        if r.status_code in (200, 206):
+            total = r.headers.get("Content-Range", "").rsplit("/", 1)[-1]
+            if total.isdigit():
+                return int(total)
+    except Exception as e:
+        log.warning("[leaderboard] count-belum gagal: %s", e)
+    return 0
+
+
+def update_leaderboard(client: SupabaseClient, state: dict, force: bool = False):
     lb = state["leaderboard"]
     now = now_ts()
 
-    if lb["last_update"] and now - lb["last_update"] < LEADERBOARD_INTERVAL:
-        return
+    # Refresh kalau interval lewat ATAU saldo naik signifikan (naik peringkat
+    # langsung kelihatan). Tanpa ini, laporan bisa menyebut posisi basi
+    # sampai 2 jam padahal user baru saja klaim.
+    saldo = float((state.get("balance") or {}).get("last_total") or 0)
+    saldo_naik = saldo and abs(saldo - float(lb.get("my_coins") or 0)) > 1
+    if not force and lb["last_update"]:
+        if now - lb["last_update"] < LEADERBOARD_INTERVAL and not saldo_naik:
+            return
 
     uid = client.tokens.get("user_id")
     prof = client.rest_get("profiles", {
@@ -1103,7 +1130,11 @@ def update_leaderboard(client: SupabaseClient, state: dict):
 
     top = rows[0] if rows else {}
     lb["top_coins"] = top.get("total_coins")
-    lb["total_users"] = (lb["my_rank"] or 0)  # fallback
+    # total user asli = posisi bos + jumlah user di bawah bos.
+    # Dulu salah: lb["my_rank"] dipakai sebagai total, jadi angkanya
+    # selalu sama dengan peringkat sendiri.
+    if above is not None:
+        lb["total_users"] = above + 1 + _count_profiles_below(client, my_coins)
 
     log.info("[leaderboard] rank=%s koin=%s (top: %s = %s)",
              lb["my_rank"], lb["my_coins"],
@@ -1220,12 +1251,25 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
         jam_next = "sekarang"
         lb_line = f"{_fmt_coins(lb_amount)} UORM"
 
-    # ── leaderboard posisi (angka saja, tanpa saldo) ──
+    # ── leaderboard posisi (hitung LIVE saat laporan dikirim) ──
+    # Jangan pakai state["leaderboard"]: bisa basi sampai LEADERBOARD_INTERVAL
+    # dan laporan menyebut posisi lama padahal user baru saja klaim.
     ldb = state["leaderboard"]
-    if ldb.get("my_rank"):
+    lb_pos = "-"
+    try:
+        my_coins_live = float(total_coins or 0)
+        if my_coins_live > 0:
+            above_live = count_profiles_above(client, my_coins_live)
+            if above_live is not None:
+                lb_pos = f"#{above_live + 1}"
+                # simpan supaya state ikut segar
+                ldb["my_coins"] = my_coins_live
+                ldb["my_rank"] = above_live + 1
+                ldb["last_update"] = now
+    except Exception as e:
+        log.warning("[laporan] hitung peringkat gagal: %s", e)
+    if lb_pos == "-" and ldb.get("my_rank"):
         lb_pos = f"#{ldb['my_rank']}"
-    else:
-        lb_pos = "-"
 
     rank_baru = rank_id != rp.get("last_rank_id")
     rp["last_rank_id"] = rank_id
