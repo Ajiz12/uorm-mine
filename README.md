@@ -6,7 +6,7 @@ Bot otomatis untuk UORM (`com.uorm.app`) — backend **Supabase**.
 
 | # | Fitur | Interval |
 |---|-------|----------|
-| 1 | Mining 24 jam (auto-start kalau berhenti) | cek tiap 60s |
+| 1 | Mining 24 jam (auto-start kalau berhenti) | cek tiap 10 menit |
 | 2 | Lucky box | tiap 4 jam |
 | 3 | Boost mining (watch ad) | via misi |
 | 4 | Misi daily / weekly / social / one-time | sync tiap 30 menit |
@@ -123,6 +123,8 @@ Brute-force 15.590 nama RPC gagal total. Yang berhasil: panggil RPC dengan nama 
 ## Catatan
 
 - Semua operasi mining/boost/misi pakai **RPC asli** — tidak ada INSERT/UPDATE langsung ke tabel (RLS menolak semua).
+- **Sesi expired tidak ditandai server.** Kolom `claimed` di `mining_sessions` tetap `false` sampai user klaim manual. Bot mendeteksi siklus 24 jam selesai dengan menghitung `started_at + session_duration_ms`, bukan dengan membaca status — kalau cuma percaya `claimed`, bot akan menganggap sesi aktif selamanya dan tidak pernah claim.
+- Error RPC (HTTP 400 dengan pesan `already claimed` / `session already active`) adalah **kondisi normal** (misal klaim dari HP), bukan kegagalan — makanya RPC pakai `rpc_full()` yang mempertahankan status code.
 - APK adalah Flutter AOT tanpa native code (`libapp.so` tidak ada), jadi reverse engineering terbatas pada layer Supabase.
 - Boost di app lewat rewarded ad (GamePix), tapi server hanya mencatat hasilnya via `apply_mining_boost` — tidak ada verifikasi iklan di backend. Limit 2 boost/hari dicek oleh `get_boost_status`.
 - Pola kenaikan rate per boost di server: +12% dan +15%. Bot pakai multiplier default 1.15.
