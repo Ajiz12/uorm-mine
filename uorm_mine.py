@@ -963,6 +963,46 @@ def sync_missions(client: SupabaseClient, state: dict):
     ms["last_sync"] = now_ts()
 
 
+def claim_bundles(client: SupabaseClient, state: dict):
+    """
+    Klaim bonus bundle harian & mingguan (kalau syaratnya sudah penuh).
+    RPC asli: claim_mission_bundle(p_type) — p_type = "daily" | "weekly".
+
+    Bonus bundle cuma bisa diklaim kalau SEMUA misi di kategori itu sudah
+    completed — termasuk misi referral. Jadi selama user skip referral,
+    server balas "not complete" dan bonus tetap terkunci (bukan bug bot).
+    Fungsi ini aman dipanggil berulang: 400 = belum waktunya, abaikan.
+    """
+    bn = state.setdefault("bundles", {})
+    res = client.rpc("get_missions")
+    if not isinstance(res, dict):
+        return
+    amounts = {"daily": res.get("daily_bundle_amount"),
+               "weekly": res.get("weekly_bundle_amount")}
+    flags = {"daily": res.get("daily_bonus_claimed"),
+             "weekly": res.get("weekly_bonus_claimed")}
+
+    for period in ("daily", "weekly"):
+        if flags.get(period):
+            continue
+        status, body = client.rpc_full("claim_mission_bundle", {"p_type": period})
+        if status == 200 and isinstance(body, dict):
+            amt = float(body.get("amount") or amounts.get(period) or 0)
+            bn[period] = {"last_claim": now_ts(), "last_amount": amt}
+            save_state(state)
+            log.info("[bundle] CLAIM %s BERHASIL: %s UORM", period, amt)
+            tg_send(
+                f"🎁 <b>UORM Bonus Bundle {period.title()}</b>\n"
+                f"Bonus: +{_fmt_coins(amt)} UORM",
+                state, force=True,
+            )
+        elif isinstance(body, dict) and "not complete" in (body.get("message") or "").lower():
+            log.info("[bundle] %s belum lengkap (%s UORM menunggu)",
+                     period, amounts.get(period))
+        else:
+            log.info("[bundle] %s -> %s %s", period, status, str(body)[:120])
+
+
 def _is_referral(mission: dict) -> bool:
     """Deteksi misi referral — jangan disentuh."""
     mid = (mission.get("id") or "").lower()
@@ -1310,6 +1350,7 @@ def main():
             # 4. misi (tiap 30 menit)
             if now_ts() - last_mission_sync > 1800:
                 sync_missions(client, state)
+                claim_bundles(client, state)
                 last_mission_sync = now_ts()
 
             # 5. leaderboard (tiap 24 jam)
