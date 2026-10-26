@@ -46,7 +46,7 @@ SKIP_MISSION_KEYS = {"invite_friend"}          # referral
 SKIP_MISSION_IDS = {"daily_invite", "weekly_invite"}   # referral — JANGAN sentuh
 
 # Interval
-MINING_CHECK_INTERVAL = 4 * 3600       # 4 jam — bareng lucky box & boost
+MINING_CHECK_INTERVAL = 10 * 60       # 10 menit — claim tepat saat 24 jam habis
 LOOP_INTERVAL = 300                    # 5 menit — tick loop internal
 LUCKY_BOX_INTERVAL = 4 * 3600          # 4 jam
 DAILY_BONUS_INTERVAL = 24 * 3600       # 24 jam — daily login bonus
@@ -392,6 +392,28 @@ class SupabaseClient:
             log.error("RPC public %s error: %s", fn, e)
         return None
 
+    def rpc_full(self, fn: str, payload: dict = None):
+        """
+        RPC yang mengembalikan (status_code, body) apa adanya.
+        Dibutuhkan untuk membedakan error server: PostgREST balas 400 dengan
+        pesan ("already claimed", "session already active") — kalau dibuang,
+        penanganan kondisinya jadi mustahil.
+        """
+        self.ensure_token()
+        try:
+            r = self.session.post(
+                f"{SUPABASE_URL}/rest/v1/rpc/{fn}",
+                json=payload or {}, timeout=30,
+            )
+            try:
+                body = r.json()
+            except ValueError:
+                body = r.text[:200]
+            return r.status_code, body
+        except Exception as e:
+            log.error("RPC %s error: %s", fn, e)
+            return None, None
+
 
 # ═══════════════════════════════════════════════════════════════
 # TELEGRAM
@@ -527,28 +549,58 @@ def claim_mining(client: SupabaseClient, state: dict, session_id: str = None) ->
     """
     Claim sesi mining yang sudah selesai (24 jam).
     RPC asli: claim_mining_session(p_session_id uuid)
-    Return jumlah koin yang di-claim (0 kalau gagal).
+    Return jumlah koin yang di-claim (0 kalau gagal / sudah di-claim).
+
+    Penting: error server (HTTP 400) TIDAK dibuang. PostgREST balas
+    {"code":"P0001","message":"already claimed"} untuk sesi yang sudah
+    diklaim — itu kondisi normal (misal klaim dari HP), bukan kegagalan.
     """
     if not session_id:
         session_id = state.get("mining", {}).get("session_id")
     if not session_id:
         return 0.0
 
-    res = client.rpc("claim_mining_session", {"p_session_id": session_id})
-    if isinstance(res, dict):
-        if res.get("ok") or res.get("amount") is not None:
-            amt = float(res.get("amount") or res.get("coins") or res.get("reward") or 0.0)
+    status, body = client.rpc_full("claim_mining_session", {"p_session_id": session_id})
+
+    if status == 200 and isinstance(body, dict):
+        if body.get("ok") or body.get("amount") is not None:
+            amt = float(body.get("amount") or body.get("coins") or body.get("reward") or 0.0)
             log.info("[mining] CLAIM BERHASIL: %s UORM", amt)
             return amt
-        msg = (res.get("message") or "").lower()
+
+    if isinstance(body, dict):
+        msg = (body.get("message") or "").lower()
         if "already claimed" in msg:
-            log.info("[mining] sesi sudah di-claim sebelumnya")
+            log.info("[mining] sesi sudah di-claim sebelumnya (normal)")
             return 0.0
         if "not finished" in msg or "belum" in msg or "active" in msg:
-            log.info("[mining] sesi belum selesai — %s", res.get("message"))
+            log.info("[mining] sesi belum selesai — %s", body.get("message"))
             return 0.0
-    log.info("[mining] claim -> %s", str(res)[:200])
+
+    log.info("[mining] claim -> %s %s", status, str(body)[:200])
     return 0.0
+
+
+def _session_expired(row: dict, now: float = None) -> bool:
+    """
+    True kalau sesi sudah lewat durasinya (default 24 jam).
+
+    Server UORM TIDAK menandai sesi expired — kolom `claimed` tetap false
+    sampai user klaim manual. Satu-satunya cara tahu siklus 24 jam selesai
+    adalah hitung started_at + session_duration_ms.
+    """
+    if not row:
+        return False
+    now = now or now_ts()
+    started = row.get("started_at")
+    if not started:
+        return False
+    try:
+        st = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    dur = row.get("session_duration_ms") or 86400000
+    return (now - st.timestamp() * 1000) >= float(dur)
 
 
 def check_mining(client: SupabaseClient, state: dict, schema: dict = None,
@@ -585,7 +637,11 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None,
         last = rows[0]
         m["started_at"] = last.get(c_start)
         m["session_id"] = last.get("id")
-        m["active"] = not last.get("claimed", False)
+        # Sesi dianggap selesai kalau claimed ATAU sudah lewat 24 jam.
+        # Server tidak pernah menandai expired — kalau cuma lihat `claimed`,
+        # bot akan menganggap sesi aktif selamanya dan tidak pernah claim.
+        expired = _session_expired(last, now)
+        m["active"] = (not last.get("claimed", False)) and not expired
         if last.get(c_rate):
             try:
                 m["rate"] = float(last[c_rate])
@@ -615,7 +671,7 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None,
 
     # ── sesi tidak aktif ──
     # Kalau ada sesi lama yang belum di-claim, claim dulu
-    if rows and not rows[0].get("claimed"):
+    if rows and not rows[0].get("claimed") and _session_expired(rows[0], now):
         amt = claim_mining(client, state, rows[0].get("id"))
         if amt > 0:
             tg_send(
@@ -626,8 +682,8 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None,
 
     # start sesi baru
     log.info("[mining] tidak aktif — start via RPC start_mining_session")
-    res = client.rpc("start_mining_session", {"p_rate_per_hour": m.get("rate") or 1.371825})
-    if isinstance(res, dict) and (res.get("ok") or res.get("id") or res.get("session_id")):
+    status, res = client.rpc_full("start_mining_session", {"p_rate_per_hour": m.get("rate") or 1.371825})
+    if status == 200 and isinstance(res, dict) and (res.get("ok") or res.get("id") or res.get("session_id")):
         log.info("[mining] start BERHASIL: %s", str(res)[:250])
         m["active"] = True
         m["started_at"] = datetime.now(timezone.utc).isoformat()
@@ -641,12 +697,16 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None,
         )
         return True
     if isinstance(res, dict) and "message" in res:
-        log.info("[mining] start_mining_session -> %s", res["message"])
-        if "already active" in res["message"]:
+        msg = res["message"].lower()
+        # server sudah punya sesi jalan (misal klaim dari HP) — anggap aktif
+        if "already active" in msg or "already running" in msg or "session already" in msg:
+            log.info("[mining] server bilang sesi sudah jalan — sinkron ulang")
             m["active"] = True
             return True
+        log.info("[mining] start_mining_session -> %s", res["message"])
 
-    log.warning("[mining] gagal start: %s — akan coba lagi nanti", str(res)[:150])
+    log.warning("[mining] gagal start: %s %s — akan coba lagi nanti",
+                status, str(res)[:150])
     return False
 
 
