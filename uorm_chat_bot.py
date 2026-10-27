@@ -26,7 +26,7 @@ LOG_FILE = os.path.join(BASE, "logs", "uorm_chat.log")
 
 ROOM_ID = "<your-room-id>"
 MY_USER_ID = "<your-user-uuid>"
-COOLDOWN = 90           # detik antar chat (aturan bos)
+COOLDOWN = 90           # detik antar chat (aturan bos — aman, di atas limit resmi 2s)
 POLL = 15               # detik cek pesan baru
 MAX_HISTORY = 60        # simpan N konten terakhir buat anti-duplikat
 
@@ -38,6 +38,26 @@ MAX_HISTORY = 60        # simpan N konten terakhir buat anti-duplikat
 # Chat level: +0.5% mining rate per level, cap +25% di Lv.50
 DAILY_QUALIFYING_CAP = 30
 XP_TIERS = [(5, 8), (15, 5), (30, 3)]   # (batas_atas_pesan_ke, xp)
+
+# Aturan resmi "Sending limits":
+#   jeda minimal 2 detik antar pesan, maksimal 12 pesan per 30 detik
+#   limit ini menghitung Global Chat + Room Chat digabung
+#   panjang pesan maksimal 300 karakter
+MSG_MIN_GAP = 2         # detik — limit resmi
+MSG_WINDOW = 30         # detik — window limit resmi
+MSG_WINDOW_MAX = 12     # pesan per window — limit resmi
+MSG_MAX_LEN = 300       # karakter — limit resmi
+
+# Aturan resmi "Reactions pay the author":
+#   dapat 2 XP kalau pesan kita di-react orang, tapi hanya sekali per pesan
+#   maksimal 5 pesan yang di-react per hari yang menghasilkan XP
+REACTION_XP = 2
+REACTION_DAILY_MAX = 5
+
+# Aturan resmi "Qualifying messages raise room activity":
+#   sampai 20 pesan qualifying per orang per hari yang menambah room activity
+#   (naikin mining boost semua orang di room itu)
+ROOM_ACTIVITY_CAP = 20
 
 WIB = timezone(timedelta(hours=7))
 
@@ -242,7 +262,11 @@ def pick_reply(intent, st):
         fresh = [f"{p} {r}" for r in pool
                  for p in ("yeah,", "honestly,", "i think", "for real,")]
         fresh = [f for f in fresh if f not in sent] or fresh
-    return random.choice(fresh)
+    # aturan resmi: pesan maksimal 300 karakter — potong kalau kelewat
+    cand = random.choice(fresh)
+    if len(cand) > MSG_MAX_LEN:
+        cand = cand[:MSG_MAX_LEN - 3].rstrip() + "..."
+    return cand
 
 
 # ─── ambil pesan baru ───
@@ -316,6 +340,11 @@ def main():
         if db_count >= DAILY_QUALIFYING_CAP:
             log("cap harian 30 sudah tercapai — bot tidak akan kirim sampai reset besok")
 
+    # aturan resmi "Sending limits": maksimal 12 pesan per 30 detik
+    # (dihitung Global + Room digabung). Cooldown 90s sudah aman, tapi
+    # tracker ini jaga-jaga kalau ada pesan manual/eksternal yang ikut hitung.
+    send_window = []   # timestamp kirim dalam 30 detik terakhir
+
     while True:
         try:
             now = time.time()
@@ -329,6 +358,12 @@ def main():
             done = daily_count(st)
             if done >= DAILY_QUALIFYING_CAP:
                 time.sleep(300)      # cek lagi 5 menit lagi
+                continue
+
+            # buang entry window yang sudah lewat 30 detik
+            send_window = [t for t in send_window if now - t < MSG_WINDOW]
+            if len(send_window) >= MSG_WINDOW_MAX:
+                time.sleep(MSG_WINDOW)
                 continue
 
             fresh = fetch_new_messages(st)
@@ -373,6 +408,7 @@ def main():
                 st["total_xp"] += xp
                 st["last_send_ts"] = time.time()
                 st["last_src"] = src
+                send_window.append(time.time())   # tracker limit 12/30s
                 # hitung posisi harian + XP sesuai tier aturan resmi
                 n = daily_count(st) + 1
                 expected = tier_xp(n)

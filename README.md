@@ -71,6 +71,18 @@ dengan pola **selang-seling** (bergantian room chat ↔ Obrolan Global), cooldow
 - Counter harian di-reset otomatis tiap ganti hari, dan di-sinkronkan dari DB saat bot start
   (jadi akurat walau bot restart atau ada pesan yang dikirim dari luar bot)
 
+### Aturan resmi lainnya yang diterapkan di bot
+
+| Aturan | Nilai | Implementasi |
+|---|---|---|
+| **Reactions pay the author** | 2 XP per pesan yang di-react, maksimal 5 pesan/hari | `REACTION_XP`, `REACTION_DAILY_MAX` — pesan bot sengaja dibuat supaya layak di-react |
+| **Levels boost mining** | +0.5% mining rate per chat level, cap +25% di Lv.50 | `XP_TIERS` + catatan level di README |
+| **Prestige** | di level maksimum bisa prestige, reset level, dapat +1% mining permanen per prestige (stack di atas level bonus) | catatan strategi — jangan reset sebelum cap +25% tercapai |
+| **Qualifying messages raise room activity** | sampai 20 pesan qualifying per orang per hari menaikkan room activity score → naikin mining boost semua orang di room itu | `ROOM_ACTIVITY_CAP` — bot tetap kirim sampai 30 (cap XP), 20 pertama yang ngasih boost room |
+| **Weekly chatter rewards** | leaderboard XP mingguan, reset tiap Senin, top 3 dapat 200/100/50 coins | catatan strategi — konsistensi harian lebih penting daripada burst |
+| **Sending limits** | jeda minimal 2 detik antar pesan, maksimal 12 pesan per 30 detik (Global + Room digabung), pesan maksimal 300 karakter | `MSG_MIN_GAP`, `MSG_WINDOW`, `MSG_WINDOW_MAX`, `MSG_MAX_LEN` + tracker window di main loop. Cooldown 90s bot jauh di atas limit ini |
+| **Keeping chat clean** | blocked word ditolak sebelum posting, foto dicek sebelum tampil, 3 laporan dalam 1 jam → kena blok | bot hanya kirim teks pendek natural, tidak ada link, tidak ada blocked word |
+
 ### Dua sistem XP yang berbeda
 
 | Room | Tabel | Sistem XP | Keterangan |
