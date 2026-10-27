@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """UORM chat grinding bot — jawab pertanyaan orang di room chat, cooldown 90s.
 
-Endpoint: RPC send_room_message(p_content, p_reply_to_id)
+Endpoint: RPC send_room_message(p_content, p_reply_to_id) untuk room chat
+          RPC send_global_message(p_content, p_reply_to_id) untuk Obrolan Global
+Baca pesan: tabel room_messages (room) + global_messages (Obrolan Global)
 Room: <your-room-id> (dari room_members akun kita)
 Aturan XP (terverifikasi):
 - konten duplikat        -> "you already sent that", tanpa XP
@@ -195,30 +197,52 @@ def pick_reply(intent, st):
 # ─── ambil pesan baru ───
 
 def fetch_new_messages(st):
+    """Ambil pesan baru dari room chat + Obrolan Global."""
     c = U.SupabaseClient()
+    out = []
+    # 1) room chat biasa
     q = (f"room_messages?room_id=eq.{ROOM_ID}"
          f"&select=id,user_id,username,content,created_at,reply_to_id"
          f"&order=created_at.desc&limit=30")
     r = c.session.get(f"{U.SUPABASE_URL}/rest/v1/{q}", timeout=30)
-    if r.status_code != 200:
-        log(f"fetch gagal: {r.status_code} {r.text[:120]}")
-        return []
-    msgs = r.json()
+    if r.status_code == 200:
+        for m in r.json():
+            m["_src"] = "room"
+            out.append(m)
+    else:
+        log(f"fetch room gagal: {r.status_code} {r.text[:120]}")
+    # 2) Obrolan Global
+    q2 = ("global_messages?select=id,user_id,username,content,created_at,reply_to_id"
+          "&order=created_at.desc&limit=40")
+    r2 = c.session.get(f"{U.SUPABASE_URL}/rest/v1/{q2}", timeout=30)
+    if r2.status_code == 200:
+        for m in r2.json():
+            m["_src"] = "global"
+            out.append(m)
+    else:
+        log(f"fetch global gagal: {r2.status_code} {r2.text[:120]}")
     # filter: bukan pesan sendiri, belum pernah di-reply
-    replied = set(st["replied_ids"][-200:])
-    fresh = [m for m in msgs
-             if m["user_id"] != MY_USER_ID and m["id"] not in replied]
+    replied = set(st["replied_ids"][-300:])
+    fresh = [m for m in out
+             if m.get("user_id") != MY_USER_ID and m.get("id") not in replied]
     fresh.reverse()  # terlama dulu biar urut wajar
     return fresh
 
 
-def send_reply(content, reply_to):
+def send_reply(content, reply_to, src="room"):
     c = U.SupabaseClient()
-    payload = {"p_content": content}
-    if reply_to:
-        payload["p_reply_to_id"] = reply_to
-    r = c.session.post(f"{U.SUPABASE_URL}/rest/v1/rpc/send_room_message",
-                       data=json.dumps(payload), timeout=30)
+    if src == "global":
+        payload = {"p_content": content}
+        if reply_to:
+            payload["p_reply_to_id"] = reply_to
+        r = c.session.post(f"{U.SUPABASE_URL}/rest/v1/rpc/send_global_message",
+                           data=json.dumps(payload), timeout=30)
+    else:
+        payload = {"p_content": content}
+        if reply_to:
+            payload["p_reply_to_id"] = reply_to
+        r = c.session.post(f"{U.SUPABASE_URL}/rest/v1/rpc/send_room_message",
+                           data=json.dumps(payload), timeout=30)
     try:
         return r.status_code, r.json()
     except Exception:
@@ -243,19 +267,25 @@ def main():
                 time.sleep(POLL)
                 continue
 
-            # pilih pesan: utamakan yang bertanya/soal app, fallback terbaru
+            # pilih pesan: utamakan yang bertanya/soal app, global dulu (lebih ramai)
             target = None
             for m in fresh:
-                if classify(m["content"]) in ("app", "question"):
+                if m.get("_src") == "global" and classify(m["content"]) in ("app", "question", "identity"):
                     target = m
                     break
+            if target is None:
+                for m in fresh:
+                    if classify(m["content"]) in ("app", "question", "identity"):
+                        target = m
+                        break
             if target is None:
                 target = fresh[-1]
 
             intent = classify(target["content"])
             reply = pick_reply(intent, st)
+            src = target.get("_src", "room")
 
-            code, res = send_reply(reply, target["id"])
+            code, res = send_reply(reply, target["id"], src)
             if code == 200 and res.get("ok"):
                 xp = res.get("xp_delta") or 0
                 awarded = res.get("awarded", False)
@@ -265,9 +295,9 @@ def main():
                 st["sent_contents"].append(reply)
                 st["replied_ids"].append(target["id"])
                 st["sent_contents"] = st["sent_contents"][-MAX_HISTORY:]
-                st["replied_ids"] = st["replied_ids"][-200:]
+                st["replied_ids"] = st["replied_ids"][-300:]
                 save_state(st)
-                log(f"CHAT #{st['total_chats']} -> {target['username'][:15]}: "
+                log(f"CHAT #{st['total_chats']} [{src}] -> {target['username'][:15]}: "
                     f"\"{target['content'][:40]}\" | balas: \"{reply[:50]}\" "
                     f"| xp+{xp} awarded={awarded} total_xp={st['total_xp']}")
             else:
