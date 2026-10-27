@@ -6,3 +6,4 @@ uorm_chat_state.json
 __pycache__/
 .pm2/
 logs/
+.bot.pid
