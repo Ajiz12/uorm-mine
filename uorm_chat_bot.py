@@ -30,6 +30,15 @@ COOLDOWN = 90           # detik antar chat (aturan bos)
 POLL = 15               # detik cek pesan baru
 MAX_HISTORY = 60        # simpan N konten terakhir buat anti-duplikat
 
+# Aturan resmi "How chat XP works":
+#   5 pesan qualifying pertama/hari = 8 XP
+#   pesan 6-15                    = 5 XP
+#   pesan 16-30                   = 3 XP
+#   total 30 pesan qualifying/hari (di luar itu TIDAK dapat XP)
+# Chat level: +0.5% mining rate per level, cap +25% di Lv.50
+DAILY_QUALIFYING_CAP = 30
+XP_TIERS = [(5, 8), (15, 5), (30, 3)]   # (batas_atas_pesan_ke, xp)
+
 WIB = timezone(timedelta(hours=7))
 
 
@@ -68,6 +77,47 @@ def save_state(st):
     with open(tmp, "w") as f:
         json.dump(st, f, indent=1)
     os.replace(tmp, STATE_FILE)
+
+
+def tier_xp(n):
+    """XP untuk pesan qualifying ke-n hari ini (1-indexed). 0 kalau sudah lewat cap."""
+    for batas, xp in XP_TIERS:
+        if n <= batas:
+            return xp
+    return 0
+
+
+def today_key():
+    return datetime.now(WIB).strftime("%Y-%m-%d")
+
+
+def daily_count(st):
+    """Jumlah pesan qualifying hari ini (reset otomatis kalau ganti hari)."""
+    if st.get("daily_date") != today_key():
+        st["daily_date"] = today_key()
+        st["daily_qualifying"] = 0
+        save_state(st)
+    return st.get("daily_qualifying", 0)
+
+
+def fetch_qualified_today():
+    """Hitung pesan qualifying hari ini langsung dari DB (sumber kebenaran).
+    Dipakai buat sinkronisasi state setelah restart / kalau state meleset."""
+    try:
+        c = U.SupabaseClient()
+        since = f"{today_key()}T00:00:00"
+        g = c.session.get(
+            f"{U.SUPABASE_URL}/rest/v1/global_messages"
+            f"?user_id=eq.{MY_USER_ID}&select=id&created_at=gte.{since}",
+            timeout=30).json()
+        r = c.session.get(
+            f"{U.SUPABASE_URL}/rest/v1/room_messages"
+            f"?user_id=eq.{MY_USER_ID}&room_id=eq.{ROOM_ID}&select=id&created_at=gte.{since}",
+            timeout=30).json()
+        return len(g) + len(r)
+    except Exception as e:
+        log(f"fetch_qualified_today gagal: {e}")
+        return None
 
 
 # ─── deteksi intent pesan orang ───
@@ -255,12 +305,30 @@ def main():
     st = load_state()
     log(f"state: chats={st['total_chats']} xp={st['total_xp']}")
 
+    # sinkronkan counter harian dari DB — state bisa meleset kalau bot
+    # restart atau kalau ada pesan yang dikirim dari luar bot
+    db_count = fetch_qualified_today()
+    if db_count is not None:
+        st["daily_date"] = today_key()
+        st["daily_qualifying"] = db_count
+        save_state(st)
+        log(f"sinkron harian dari DB: {db_count}/{DAILY_QUALIFYING_CAP} pesan qualifying")
+        if db_count >= DAILY_QUALIFYING_CAP:
+            log("cap harian 30 sudah tercapai — bot tidak akan kirim sampai reset besok")
+
     while True:
         try:
             now = time.time()
             wait = COOLDOWN - (now - st["last_send_ts"])
             if wait > 0:
                 time.sleep(min(wait, POLL))
+                continue
+
+            # cap harian 30 pesan qualifying — di luar itu TIDAK dapat XP
+            # (aturan resmi "How chat XP works"), jadi bot berhenti kirim
+            done = daily_count(st)
+            if done >= DAILY_QUALIFYING_CAP:
+                time.sleep(300)      # cek lagi 5 menit lagi
                 continue
 
             fresh = fetch_new_messages(st)
@@ -305,6 +373,10 @@ def main():
                 st["total_xp"] += xp
                 st["last_send_ts"] = time.time()
                 st["last_src"] = src
+                # hitung posisi harian + XP sesuai tier aturan resmi
+                n = daily_count(st) + 1
+                expected = tier_xp(n)
+                st["daily_qualifying"] = n
                 st["sent_contents"].append(reply)
                 st["replied_ids"].append(target["id"])
                 st["sent_contents"] = st["sent_contents"][-MAX_HISTORY:]
@@ -312,7 +384,8 @@ def main():
                 save_state(st)
                 log(f"CHAT #{st['total_chats']} [{src}] -> {target['username'][:15]}: "
                     f"\"{target['content'][:40]}\" | balas: \"{reply[:50]}\" "
-                    f"| xp+{xp} awarded={awarded} total_xp={st['total_xp']}")
+                    f"| xp+{xp} awarded={awarded} | harian {n}/{DAILY_QUALIFYING_CAP} "
+                    f"(tier {expected}) total_xp={st['total_xp']}")
             else:
                 msg = res.get("message") or res.get("raw") or str(res)[:100]
                 log(f"kirim gagal ({code}): {msg}")
