@@ -54,6 +54,7 @@ def load_state():
     return {
         "last_seen_id": None,
         "last_send_ts": 0,
+        "last_src": None,
         "sent_contents": [],
         "replied_ids": [],
         "total_chats": 0,
@@ -267,17 +268,28 @@ def main():
                 time.sleep(POLL)
                 continue
 
-            # pilih pesan: utamakan yang bertanya/soal app, global dulu (lebih ramai)
+            # selang-sing: kalau terakhir kirim di global -> cari target di room, dan sebaliknya
+            want = "room" if st.get("last_src") == "global" else "global"
             target = None
+            # pass 1: sumber yang diinginkan + intent bagus
             for m in fresh:
-                if m.get("_src") == "global" and classify(m["content"]) in ("app", "question", "identity"):
+                if m.get("_src") == want and classify(m["content"]) in ("app", "question", "identity"):
                     target = m
                     break
+            # pass 2: sumber yang diinginkan, pesan terbaru apa aja
             if target is None:
                 for m in fresh:
-                    if classify(m["content"]) in ("app", "question", "identity"):
+                    if m.get("_src") == want:
                         target = m
                         break
+            # pass 3: sumber lawan, intent bagus (kalau sumber pilihan kosong)
+            if target is None:
+                other = "global" if want == "room" else "room"
+                for m in fresh:
+                    if m.get("_src") == other and classify(m["content"]) in ("app", "question", "identity"):
+                        target = m
+                        break
+            # pass 4: apa aja yang ada
             if target is None:
                 target = fresh[-1]
 
@@ -292,6 +304,7 @@ def main():
                 st["total_chats"] += 1
                 st["total_xp"] += xp
                 st["last_send_ts"] = time.time()
+                st["last_src"] = src
                 st["sent_contents"].append(reply)
                 st["replied_ids"].append(target["id"])
                 st["sent_contents"] = st["sent_contents"][-MAX_HISTORY:]
