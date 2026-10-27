@@ -1,6 +1,8 @@
 .env
 uorm_tokens.json
 uorm_state.json
+uorm_chat_state.json
 *.log
 __pycache__/
 .pm2/
+logs/

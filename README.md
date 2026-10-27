@@ -11,7 +11,7 @@ Bot otomatis untuk UORM (`com.uorm.app`) — backend **Supabase**.
 | 3 | Boost mining (watch ad) | via misi |
 | 4 | Misi daily / weekly / social / one-time | sync tiap 30 menit |
 | 5 | Leaderboard harian | tiap 24 jam |
-| + | Monitor saldo 24 jam (alert kalau macet) | tiap 10 menit |
+| 6 | **Chat grinding XP** (jawab pertanyaan room, cooldown 90s) | tiap 90s |
 
 **Misi referral TIDAK dikerjakan bot** — `daily_invite`, `daily_share`, `weekly_invite`, dan semua misi dengan `requirement_key = invite_friend` dilewati.
 
@@ -46,12 +46,28 @@ Watchdog (cron tiap 5 menit):
 | `python3 uorm_mine.py --discover` | Petakan schema database |
 | `python3 uorm_mine.py --status` | Lihat state bot |
 | `./status.sh` | Ringkasan read-only |
+| `pm2 logs uorm-chat` | Log chat grinding |
+
+## Chat Grinding XP
+
+Bot `uorm_chat_bot.py` (PM2 `uorm-chat`) grinding XP lewat room chat:
+baca pesan terbaru, jawab yang nyambung (reply ke pesan aslinya), cooldown 90 detik.
+
+- **RPC:** `send_room_message(p_content, p_reply_to_id, p_image_url)`
+- **Aturan XP terverifikasi:** konten duplikat ditolak (`you already sent that`),
+  konten terlalu pendek `qualified:false` (tanpa XP), reply substantif `awarded:true` (+3-8 XP)
+- **Deteksi intent:** sapaan / soal app / pertanyaan / obrolan biasa — tiap intent punya pool jawaban
+- **Anti-duplikat:** simpan 60 konten terakhir, tidak mengulang kalimat
+- **State:** `uorm_chat_state.json` (chats, xp, replied_ids) — tahan restart
+- **Room:** `<your-room-id>` (dari `room_members` akun)
 
 ## File
 
 | File | Isi |
 |------|-----|
 | `uorm_mine.py` | Bot utama |
+| `uorm_chat_bot.py` | Bot chat grinding XP |
+| `ecosystem.chat.config.js` | Konfig PM2 chat bot |
 | `.env` | Kredensial (**gitignored**) |
 | `uorm_tokens.json` | Access + refresh token (**gitignored**) |
 | `uorm_state.json` | State runtime (**gitignored**) |
