@@ -55,6 +55,22 @@ Watchdog (cron tiap 5 menit):
 Bot `uorm_chat_bot.py` (PM2 `uorm-chat`) grinding XP lewat **dua room sekaligus**,
 dengan pola **selang-seling** (bergantian room chat ↔ Obrolan Global), cooldown 90 detik.
 
+### Aturan XP resmi ("How chat XP works")
+
+| Pesan qualifying ke- | XP |
+|---|---|
+| 1–5 | **8 XP** |
+| 6–15 | **5 XP** |
+| 16–30 | **3 XP** |
+| 31+ | **0 XP** (di luar cap) |
+
+- **Total 30 pesan qualifying per hari** — pesan di luar itu tidak dapat XP sama sekali
+- **Chat level** menambah **+0.5% mining rate per level**, cap **+25% di Lv.50**
+- Bot menghormati cap ini: setelah 30 pesan, bot berhenti kirim sampai reset hari berikutnya
+  (kirim terus setelah cap = murni spam, tanpa XP, berisiko di-flag)
+- Counter harian di-reset otomatis tiap ganti hari, dan di-sinkronkan dari DB saat bot start
+  (jadi akurat walau bot restart atau ada pesan yang dikirim dari luar bot)
+
 ### Dua sistem XP yang berbeda
 
 | Room | Tabel | Sistem XP | Keterangan |
@@ -77,6 +93,7 @@ XP harian dari room chat, XP mingguan dari Obrolan Global.
 - Reply substantif ke pesan orang → `awarded:true` (+3-8 XP)
 - Server throttle → balas `slow down` (rate limit XP harian per akun)
 - Room chat: XP naik real-time; Obrolan Global: `qualified:true` yang menentukan payout mingguan
+- **Cap 30 pesan qualifying/hari** (lihat tabel di atas) — bot berhenti kirim setelah cap tercapai
 
 ### Perilaku bot
 
@@ -183,6 +200,7 @@ Brute-force 15.590 nama RPC gagal total. Yang berhasil: panggil RPC dengan nama 
 ## Catatan
 
 - **Dua sistem XP chat yang berbeda.** Room Chat (`room_messages`) bayar XP **real-time** per pesan (`xp_delta` + `awarded` langsung di response). Obrolan Global (`global_messages`) **tidak** bayar per pesan — response balik `qualified:true` tapi `awarded:false`, `xp_delta:0`; XP-nya dibayar sekaligus mingguan via `payout_chat_xp_weekly` (function internal, permission denied untuk user). Makanya bot selang-seling: dua jalur XP jalan bersamaan.
+- **Cap 30 pesan qualifying/hari.** Aturan resmi "How chat XP works": 5 pertama = 8 XP, 6–15 = 5 XP, 16–30 = 3 XP, di luar 30 = 0 XP. Bot menghormati cap ini dan berhenti kirim sampai reset hari berikutnya. Chat level menambah +0.5% mining rate per level, cap +25% di Lv.50.
 - **`total_xp` di `uorm_chat_state.json` bukan angka XP sebenarnya** — itu cuma akumulasi `xp_delta` room chat. XP asli ada di kolom `profiles.xp` (termasuk payout global). Script notifikasi sengaja query `profiles.xp`, bukan state bot.
 - Semua operasi mining/boost/misi pakai **RPC asli** — tidak ada INSERT/UPDATE langsung ke tabel (RLS menolak semua).
 - **Sesi expired tidak ditandai server.** Kolom `claimed` di `mining_sessions` tetap `false` sampai user klaim manual. Bot mendeteksi siklus 24 jam selesai dengan menghitung `started_at + session_duration_ms`, bukan dengan membaca status — kalau cuma percaya `claimed`, bot akan menganggap sesi aktif selamanya dan tidak pernah claim.
