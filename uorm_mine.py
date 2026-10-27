@@ -37,7 +37,6 @@ TOKENS_FILE = BASE_DIR / "uorm_tokens.json"
 PID_FILE = BASE_DIR / ".bot.pid"
 
 SUPABASE_URL = "https://tnxxckqqhwwajeljrnnl.supabase.co"
-SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRueHhja3FxaHd3YWplbGpybm5sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY3MzM0MDksImV4cCI6MjEwMjMwOTQwOX0.aLlLRxaltsW6Retxl4ddNKF9WkSHUJOiHVEsrcQvAJk"
 
 WIB = timezone(timedelta(hours=7))
 
@@ -105,6 +104,8 @@ def cfg(key, default=None):
 
 # Load .env langsung saat module di-import supaya cfg() selalu siap
 load_env()
+
+SUPABASE_ANON_KEY = cfg("SUPABASE_ANON_KEY")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -600,7 +601,9 @@ def _session_expired(row: dict, now: float = None) -> bool:
     except (ValueError, TypeError):
         return False
     dur = row.get("session_duration_ms") or 86400000
-    return (now - st.timestamp() * 1000) >= float(dur)
+    # now_ts() detik, st.timestamp() detik — konversi ke ms DULU, jangan
+    # (detik - detik*1000): itu bikin angka negatif besar, expired selalu False
+    return ((now - st.timestamp()) * 1000.0) >= float(dur)
 
 
 def check_mining(client: SupabaseClient, state: dict, schema: dict = None,
