@@ -28,7 +28,23 @@ ROOM_ID = "<your-room-id>"
 MY_USER_ID = "<your-user-uuid>"
 COOLDOWN = 90           # detik antar chat (aturan bos — aman, di atas limit resmi 2s)
 POLL = 15               # detik cek pesan baru
-MAX_HISTORY = 60        # simpan N konten terakhir buat anti-duplikat
+MAX_HISTORY = 120       # simpan N konten terakhir buat anti-duplikat
+
+# Target volume harian (perintah bos, 29 Okt 2026):
+#   Obrolan Global: 50-100 pesan/hari
+#   Room Chat     : 20-30 pesan/hari
+#   total target   : 70-130 pesan/hari
+# Catatan: cap XP resmi tetap 30 pesan qualifying/hari (di luar itu 0 XP).
+# Pesan di luar cap tetap dikirim sebagai "jaga-jaga" — aktivitas chat naikin
+# room activity + chat level (+0.5% mining rate/level), dan chat_xp_log
+# server tetap mencatat count harian.
+GLOBAL_DAILY_TARGET = 80      # tengah rentang 50-100
+GLOBAL_DAILY_MIN = 50
+GLOBAL_DAILY_MAX = 100
+ROOM_DAILY_TARGET = 25        # tengah rentang 20-30
+ROOM_DAILY_MIN = 20
+ROOM_DAILY_MAX = 30
+TOTAL_DAILY_TARGET = GLOBAL_DAILY_TARGET + ROOM_DAILY_TARGET   # 105
 
 # Aturan resmi "How chat XP works":
 #   5 pesan qualifying pertama/hari = 8 XP
@@ -108,7 +124,8 @@ def tier_xp(n):
 
 
 def today_key():
-    return datetime.now(WIB).strftime("%Y-%m-%d")
+    """Kunci hari sesuai reset server (UTC-day, 00:00 UTC = 07:00 WIB)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def daily_count(st):
@@ -116,16 +133,59 @@ def daily_count(st):
     if st.get("daily_date") != today_key():
         st["daily_date"] = today_key()
         st["daily_qualifying"] = 0
+        st["daily_global"] = 0
+        st["daily_room"] = 0
         save_state(st)
     return st.get("daily_qualifying", 0)
 
 
-def fetch_qualified_today():
-    """Hitung pesan qualifying hari ini langsung dari DB (sumber kebenaran).
-    Dipakai buat sinkronisasi state setelah restart / kalau state meleset."""
+def daily_src_count(st, src):
+    """Jumlah pesan terkirim hari ini per sumber (global/room)."""
+    if st.get("daily_date") != today_key():
+        daily_count(st)
+    return st.get("daily_global" if src == "global" else "daily_room", 0)
+
+
+def sync_daily_from_db(st):
+    """Sinkronkan counter harian (total + per sumber) dari DB.
+
+    Dipakai sekali saat start dan tiap pergantian hari. Server menghitung
+    kuota XP per UTC-day (00:00 UTC = 07:00 WIB), jadi batas hari pakai
+    UTC biar cocok dengan hitungan server.
+    """
     try:
         c = U.SupabaseClient()
-        since = f"{today_key()}T00:00:00"
+        now_utc = datetime.now(timezone.utc)
+        day_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        since = day_start.isoformat()
+        g = c.session.get(
+            f"{U.SUPABASE_URL}/rest/v1/global_messages"
+            f"?user_id=eq.{MY_USER_ID}&select=id&created_at=gte.{since}",
+            timeout=30).json()
+        r = c.session.get(
+            f"{U.SUPABASE_URL}/rest/v1/room_messages"
+            f"?user_id=eq.{MY_USER_ID}&room_id=eq.{ROOM_ID}&select=id&created_at=gte.{since}",
+            timeout=30).json()
+        st["daily_global"] = len(g)
+        st["daily_room"] = len(r)
+        st["daily_qualifying"] = len(g) + len(r)
+        st["daily_date"] = today_key()
+        st["daily_sync_utc"] = day_start.strftime("%Y-%m-%d")
+        save_state(st)
+        return len(g), len(r)
+    except Exception as e:
+        log(f"sync_daily_from_db gagal: {e}")
+        return None, None
+
+
+def fetch_qualified_today():
+    """Hitung pesan qualifying hari ini langsung dari DB (sumber kebenaran).
+    Dipakai buat sinkronisasi state setelah restart / kalau state meleset.
+    Pakai UTC-day supaya cocok dengan reset kuota server."""
+    try:
+        c = U.SupabaseClient()
+        since = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0).isoformat()
         g = c.session.get(
             f"{U.SUPABASE_URL}/rest/v1/global_messages"
             f"?user_id=eq.{MY_USER_ID}&select=id&created_at=gte.{since}",
@@ -249,6 +309,62 @@ REPLIES = {
         "i feel that, some days are just about not breaking the streak",
         "couldnt have said it better myself",
         "yeah exactly, and its nice doing it alongside other people for once",
+        "true that. the streak is the whole game at the end of the day",
+        "yep, small daily wins beat one big lucky day every time",
+        "this room keeps me honest, i forget to claim sometimes and someone reminds me",
+        "honestly the social part is what keeps me coming back, not just the coins",
+        "same, i set a reminder so i never miss the claim window",
+        "yeah the people in here actually help each other out, rare on the internet",
+        "thats the mindset. treat it like a habit not a chore",
+        "agreed, and the leaderboard pushes you a bit too",
+        "no doubt, consistency compounds way more than people expect",
+        "love the energy in here today honestly",
+        "yeah its way more fun grinding with company than solo",
+        "thats real. i used to mine alone and always forgot the daily stuff",
+        "exactly, and the daily missions take like two minutes anyway",
+        "for real, two minutes a day is the easiest trade in crypto",
+        "yeah and once its a habit you dont even think about it anymore",
+        "well put. the people who last are the ones who just keep showing up",
+        "same page here, no shortcuts worth taking anyway",
+        "yeah, slow and steady actually wins in these apps",
+        "thats what ive learned too, the grind rewards the patient ones",
+        "couldnt agree more, the streak is worth more than any single payout",
+        "yeah and its nice seeing familiar names in here every day",
+        "true, the regulars make this place worth checking into",
+    ],
+    # pesan ringan tanpa perlu balasan orang — dipakai kalau target volume
+    # harian belum penuh tapi tidak ada pesan baru yang layak di-reply
+    "ambient": [
+        "gm everyone, hope the rates are good today",
+        "another day another session, lets get it",
+        "just claimed mine, streak still alive",
+        "the lucky box timer got me again, almost forgot",
+        "anyone else running two sessions on different apps?",
+        "mining while working, best kind of multitasking",
+        "today feels like a good day for the leaderboard",
+        "reminder to claim before the cycle ends guys",
+        "the boost ads are worth it if you time them right",
+        "week streak going strong, not breaking it now",
+        "coffee and mining, perfect morning combo",
+        "who else checks this room first thing in the morning",
+        "small coins add up, dont let anyone tell you otherwise",
+        "the daily missions are basically free money at this point",
+        "grinding quietly while everyone else sleeps",
+        "sessions running smooth today, no complaints here",
+        "the community in here is honestly the best part",
+        "keep the streak alive folks, almost at the bonus tier",
+        "rate looks decent today, boost did its job",
+        "just a quick check in before i forget today",
+        "mining apps are the long game, patience is the whole skill",
+        "love seeing this room active, keeps me motivated",
+        "dont sleep on the lucky box, its free coins",
+        "one more day closer to the next tier, lets go",
+        "quiet grind today but the streak matters more anyway",
+        "checking in from indonesia, morning everyone",
+        "the 24h cycle is such a good rhythm once you get used to it",
+        "boosted early today so the whole session runs higher",
+        "no ragrets, just claim and repeat every day",
+        "the app rewards showing up more than anything else ive tried",
     ],
 }
 
@@ -331,19 +447,16 @@ def main():
 
     # sinkronkan counter harian dari DB — state bisa meleset kalau bot
     # restart atau kalau ada pesan yang dikirim dari luar bot
-    db_count = fetch_qualified_today()
-    if db_count is not None:
-        st["daily_date"] = today_key()
-        st["daily_qualifying"] = db_count
-        save_state(st)
-        log(f"sinkron harian dari DB: {db_count}/{DAILY_QUALIFYING_CAP} pesan qualifying")
-        if db_count >= DAILY_QUALIFYING_CAP:
-            log("cap harian 30 sudah tercapai — bot tidak akan kirim sampai reset besok")
+    g_n, r_n = sync_daily_from_db(st)
+    if g_n is not None:
+        log(f"sinkron harian dari DB: global={g_n} room={r_n} "
+            f"total={g_n + r_n}/{DAILY_QUALIFYING_CAP} qualifying")
 
     # aturan resmi "Sending limits": maksimal 12 pesan per 30 detik
     # (dihitung Global + Room digabung). Cooldown 90s sudah aman, tapi
     # tracker ini jaga-jaga kalau ada pesan manual/eksternal yang ikut hitung.
     send_window = []   # timestamp kirim dalam 30 detik terakhir
+    last_sync_day = st.get("daily_sync_utc")
 
     while True:
         try:
@@ -353,11 +466,22 @@ def main():
                 time.sleep(min(wait, POLL))
                 continue
 
-            # cap harian 30 pesan qualifying — di luar itu TIDAK dapat XP
-            # (aturan resmi "How chat XP works"), jadi bot berhenti kirim
-            done = daily_count(st)
-            if done >= DAILY_QUALIFYING_CAP:
-                time.sleep(300)      # cek lagi 5 menit lagi
+            # re-sinkron counter harian tiap ganti UTC-day (reset XP server)
+            utc_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if utc_day != last_sync_day:
+                g_n, r_n = sync_daily_from_db(st)
+                last_sync_day = utc_day
+                if g_n is not None:
+                    log(f"ganti hari (UTC {utc_day}) — sinkron ulang: "
+                        f"global={g_n} room={r_n} total={g_n + r_n}")
+
+            # ─── target volume harian (perintah bos) ───
+            # cap XP resmi tetap 30 qualifying/hari; pesan di luar cap
+            # tetap dikirim sebagai jaga-jaga (room activity + chat level)
+            dg = daily_src_count(st, "global")
+            dr = daily_src_count(st, "room")
+            if dg >= GLOBAL_DAILY_MAX and dr >= ROOM_DAILY_MAX:
+                time.sleep(300)      # target harian penuh, cek lagi 5 menit
                 continue
 
             # buang entry window yang sudah lewat 30 detik
@@ -368,18 +492,66 @@ def main():
 
             fresh = fetch_new_messages(st)
             if not fresh:
+                # tidak ada pesan baru yang bisa di-reply — kalau target
+                # volume harian belum penuh, kirim pesan ambient supaya
+                # aktivitas + count harian tetap jalan
+                dg = daily_src_count(st, "global")
+                dr = daily_src_count(st, "room")
+                if dg < GLOBAL_DAILY_MAX or dr < ROOM_DAILY_MAX:
+                    src = "global" if dg < GLOBAL_DAILY_MAX else "room"
+                    reply = pick_reply("ambient", st)
+                    code, res = send_reply(reply, None, src)
+                    if code == 200 and res.get("ok"):
+                        xp = res.get("xp_delta") or 0
+                        st["total_chats"] += 1
+                        st["total_xp"] += xp
+                        st["last_send_ts"] = time.time()
+                        st["last_src"] = src
+                        send_window.append(time.time())
+                        n = daily_count(st) + 1
+                        st["daily_qualifying"] = n
+                        if src == "global":
+                            st["daily_global"] = daily_src_count(st, "global") + 1
+                        else:
+                            st["daily_room"] = daily_src_count(st, "room") + 1
+                        st["sent_contents"].append(reply)
+                        st["sent_contents"] = st["sent_contents"][-MAX_HISTORY:]
+                        save_state(st)
+                        log(f"AMBIENT #{st['total_chats']} [{src}] -> \"{reply[:50]}\" "
+                            f"| xp+{xp} | harian {n}/{DAILY_QUALIFYING_CAP} "
+                            f"| global {st['daily_global']}/{GLOBAL_DAILY_MAX} "
+                            f"room {st['daily_room']}/{ROOM_DAILY_MAX}")
+                    else:
+                        st["last_send_ts"] = time.time()
+                        save_state(st)
+                        log(f"ambient gagal ({code}): "
+                            f"{(res.get('message') or res.get('raw') or str(res))[:100]}")
+                    continue
                 time.sleep(POLL)
                 continue
 
-            # selang-sing: kalau terakhir kirim di global -> cari target di room, dan sebaliknya
-            want = "room" if st.get("last_src") == "global" else "global"
+            # ─── pilih sumber: yang paling kurang dari target ───
+            # defisit global = target - sudah kirim; makin besar defisit,
+            # makin diprioritaskan. Kalau salah satu sudah penuh (>= max),
+            # paksa ke sumber yang lain.
+            gap_g = GLOBAL_DAILY_TARGET - dg
+            gap_r = ROOM_DAILY_TARGET - dr
+            if dg >= GLOBAL_DAILY_MAX:
+                want = "room"
+            elif dr >= ROOM_DAILY_MAX:
+                want = "global"
+            elif gap_g >= gap_r:
+                want = "global"
+            else:
+                want = "room"
+
             target = None
-            # pass 1: sumber yang diinginkan + intent bagus
+            # pass 1: sumber pilihan + intent bagus
             for m in fresh:
                 if m.get("_src") == want and classify(m["content"]) in ("app", "question", "identity"):
                     target = m
                     break
-            # pass 2: sumber yang diinginkan, pesan terbaru apa aja
+            # pass 2: sumber pilihan, pesan terbaru apa aja
             if target is None:
                 for m in fresh:
                     if m.get("_src") == want:
@@ -413,6 +585,10 @@ def main():
                 n = daily_count(st) + 1
                 expected = tier_xp(n)
                 st["daily_qualifying"] = n
+                if src == "global":
+                    st["daily_global"] = daily_src_count(st, "global") + 1
+                else:
+                    st["daily_room"] = daily_src_count(st, "room") + 1
                 st["sent_contents"].append(reply)
                 st["replied_ids"].append(target["id"])
                 st["sent_contents"] = st["sent_contents"][-MAX_HISTORY:]
@@ -421,7 +597,8 @@ def main():
                 log(f"CHAT #{st['total_chats']} [{src}] -> {target['username'][:15]}: "
                     f"\"{target['content'][:40]}\" | balas: \"{reply[:50]}\" "
                     f"| xp+{xp} awarded={awarded} | harian {n}/{DAILY_QUALIFYING_CAP} "
-                    f"(tier {expected}) total_xp={st['total_xp']}")
+                    f"(tier {expected}) | global {st['daily_global']}/{GLOBAL_DAILY_MAX} "
+                    f"room {st['daily_room']}/{ROOM_DAILY_MAX} total_xp={st['total_xp']}")
             else:
                 msg = res.get("message") or res.get("raw") or str(res)[:100]
                 log(f"kirim gagal ({code}): {msg}")
