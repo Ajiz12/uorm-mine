@@ -53,6 +53,10 @@ LEADERBOARD_INTERVAL = 2 * 3600        # 2 jam — posisi cepat berubah
 REPORT_INTERVAL = 4 * 3600             # 4 jam — notif status berkala
 TOKEN_REFRESH_MARGIN = 300             # refresh 5 menit sebelum expired
 
+# Boost mining — jadwal WIB (2 slot/hari, TIDAK di luar jam ini)
+BOOST_SLOTS_WIB = [(8, 9), (13, 14)]   # 08:00-08:59 & 13:00-13:59 WIB
+BOOST_MAX_PER_DAY = 2                  # server limit 2/hari — slot di atas = 2
+
 TG_MAX_PER_DAY = 1                  # notif Telegram per hari (notif biasa)
                                      # laporan status & boost selalu force=True
 
@@ -123,6 +127,8 @@ DEFAULT_STATE = {
         "rate_per_hour": 0.0,
         "boost_expires_at": None,
         "boost_multiplier": 1,
+        "boost_last_date": None,
+        "boost_claimed_today": 0,
     },
     "lucky_box": {
         "last_claim": 0,
@@ -1216,6 +1222,34 @@ def _boost_aktif(state: dict) -> bool:
         return False
 
 
+def _reset_boost_harian(state: dict):
+    """Reset counter boost lokal tiap ganti hari WIB (server reset kuota juga)."""
+    hari_ini = now_wib().strftime("%Y-%m-%d")
+    m = state["mining"]
+    if m.get("boost_last_date") != hari_ini:
+        m["boost_last_date"] = hari_ini
+        m["boost_claimed_today"] = 0
+        # boost_expires_at basi dari hari sebelumnya → anggap tidak aktif
+        if not _boost_aktif(state):
+            m["boost_expires_at"] = None
+
+
+def _boost_slot_sekarang() -> bool:
+    """True kalau sekarang jatuh di slot boost (08-09 atau 13-14 WIB)."""
+    h = now_wib().hour
+    return any(start <= h < end for start, end in BOOST_SLOTS_WIB)
+
+
+def _boost_slot_berikutnya() -> str:
+    """Label slot boost berikutnya, buat log/notif."""
+    h = now_wib().hour
+    for start, end in BOOST_SLOTS_WIB:
+        if h < start:
+            return f"{start:02d}:00-{end:02d}:00 WIB"
+    # sudah lewat semua slot hari ini → slot pertama besok
+    return f"{BOOST_SLOTS_WIB[0][0]:02d}:00-{BOOST_SLOTS_WIB[0][1]:02d}:00 WIB (besok)"
+
+
 def send_status_report(client: SupabaseClient, state: dict, force: bool = False):
     """
     Kirim laporan status UORM ke Telegram.
@@ -1301,27 +1335,47 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
 
 def auto_boost(client: SupabaseClient, state: dict):
     """
-    Cek tiap loop: kalau boost tidak aktif DAN slot harian masih ada,
-    langsung aktifkan. Kalau boost sudah aktif, biarkan sampai expired.
+    Cek tiap loop: boost hanya diaktifkan kalau
+      1. mining aktif,
+      2. sekarang jatuh di slot WIB (08-09 / 13-14),
+      3. boost belum aktif,
+      4. slot harian server masih ada (max 2/hari).
+    Di luar slot → tidak pernah klaim, tunggu jam berikutnya.
     """
     if not state.get("mining", {}).get("active"):
         return
+
+    # ganti hari WIB → reset counter lokal
+    _reset_boost_harian(state)
 
     # sudah aktif — jangan boros slot
     if _boost_aktif(state):
         return
 
+    # di luar jam boost → jangan klaim
+    if not _boost_slot_sekarang():
+        return
+
+    # guard lokal: kalau state bilang sudah 2x hari ini, jangan panggil RPC
+    if state["mining"].get("boost_claimed_today", 0) >= BOOST_MAX_PER_DAY:
+        return
+
     st = client.rpc("get_boost_status")
     if not isinstance(st, dict):
         return
-    used, limit = st.get("used", 0), st.get("limit", 2)
+    used, limit = st.get("used", 0), st.get("limit", BOOST_MAX_PER_DAY)
     if used >= limit:
+        log.info("[boost] limit harian habis (%s/%s) — slot berikutnya %s",
+                 used, limit, _boost_slot_berikutnya())
         return
 
-    log.info("[boost] slot tersedia (%d/%d) — aktifkan", used, limit)
+    log.info("[boost] slot %s aktif, slot harian %d/%d — aktifkan",
+             f"{now_wib().strftime('%H:%M')} WIB", used, limit)
     if boost_mining(client, state):
+        state["mining"]["boost_claimed_today"] = used + 1
         tg_send(
             f"📈 <b>UORM Boost Aktif</b>\n"
+            f"Waktu: {now_wib().strftime('%H:%M')} WIB\n"
             f"Rate: {state['mining'].get('rate_per_hour')} UORM/jam\n"
             f"Slot boost: {used + 1}/{limit} hari ini",
             state, force=True,
