@@ -208,7 +208,7 @@ QUESTION_WORDS = ["what", "how", "why", "when", "where", "who", "which",
                   "can you", "could you", "do you", "are you", "is it",
                   "?", "چه", "چی", "کی", "چرا", "چطور", "کجا", "sao",
                   "gì", "nào", "phải không"]
-# pertanyaan identitas — jawab: Miner
+# pertanyaan identitas — jawab pakai persona generik (lihat REPLIES["identity"])
 IDENTITY_WORDS = ["who are you", "your name", "what's your name", "whats your name",
                   "siapa kamu", "nama kamu", "lu siapa", "loe siapa", "kamu siapa",
                   "who u", "who you", "your real name", "introduce yourself",
@@ -235,12 +235,12 @@ def classify(text):
 
 REPLIES = {
     "identity": [
-        "im miner, nice to meet you",
-        "miner here, just another miner in this room",
-        "people call me miner, whats yours?",
-        "im miner — been around here mining quietly",
-        "miner, from indonesia. you?",
-        "name is miner, good to see new faces in here",
+        "im a miner here, nice to meet you",
+        "just another miner in this room",
+        "im one of the regulars here, whats yours?",
+        "been around here mining quietly",
+        "you can call me miner, you?",
+        "just a quiet miner, good to see new faces in here",
     ],
     "greet": [
         "gm! hope your mining is running smooth today",

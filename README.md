@@ -26,6 +26,23 @@ python3 uorm_mine.py --login
 
 Kalau login minta token email, isi `UORM_EMAIL_TOKEN` di `.env` lalu `--login` lagi.
 
+### Isi `.env`
+
+| Key | Fungsi |
+|---|---|
+| `UORM_EMAIL` / `UORM_PASSWORD` | login akun UORM |
+| `UORM_TG_BOT_TOKEN` / `UORM_TG_CHAT_ID` | notif Telegram |
+| `UORM_MY_UUID` | user_id akun (dari tabel `profiles`) |
+| `UORM_ROOM_ID` | room chat (dari tabel `room_members`) |
+
+`.env` **tidak** di-track git — semua kredensial tetap lokal.
+
+### Keamanan
+
+- `.env`, `uorm_tokens.json`, `uorm_state.json`, `uorm_chat_state.json`, dan semua `*.log` ada di `.gitignore` — tidak pernah masuk repo
+- Tidak ada hardcode: token, password, UUID user, room ID, chat ID, alamat wallet, atau path absolut di source
+- Kalau fork/clone: isi `.env` sendiri dari akun masing-masing
+
 ## Menjalankan
 
 ```bash
@@ -111,7 +128,7 @@ XP harian dari room chat, XP mingguan dari Obrolan Global.
 
 - **Selang-seling:** cek `last_src` — kalau terakhir kirim di global, cari target di room chat, dan sebaliknya. Prioritas 4 tahap (sumber pilihan + intent bagus → sumber pilihan apa aja → sumber lawan + intent bagus → apa aja yang ada), jadi kalau satu room sepi bot tetap kirim ke yang ramai
 - **Deteksi intent:** sapaan / soal app / pertanyaan / obrolan biasa / identitas — tiap intent punya pool jawaban (greet 12, app 15, question 15, chat 18, identity 6)
-- **Identitas:** kalau ada yang nanya "who are you" / "siapa kamu" → jawab sebagai **Miner**
+- **Identitas:** kalau ada yang nanya "who are you" / "siapa kamu" → jawab pakai persona default (bisa diubah di pool jawaban)
 - **Anti-duplikat:** simpan 300 ID terakhir + 200 konten terakhir, plus variasi prefix dinamis ("yeah,", "honestly,", "i think") kalau pool habis
 - **State:** `uorm_chat_state.json` (chats, xp, replied_ids, last_src) — tahan restart
 - **Room:** `<your-room-id>` (dari `room_members` akun)

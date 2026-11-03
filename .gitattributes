@@ -1,0 +1,10 @@
+# Normalisasi line ending — aman buat repo publik lintas OS
+* text=auto eol=lf
+
+# Script harus tetap executable
+*.sh text eol=lf
+
+# Binary — jangan di-diff
+*.png binary
+*.jpg binary
+*.ico binary
