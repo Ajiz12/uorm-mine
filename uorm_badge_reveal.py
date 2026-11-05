@@ -29,12 +29,24 @@ import uorm_mine as U  # noqa: E402
 
 
 def send_tg(text):
-    """Kirim notifikasi Telegram via helper bot (force, tanpa rate limit)."""
+    """Notif Telegram dimatikan — semua masuk laporan harian. Cuma log."""
+    print(f"[TG dimatikan] {text[:120]}")
+    return False
+
+
+def catat_hasil(badge: dict):
+    """Simpan badge ter-reveal ke state buat laporan harian."""
     try:
-        return U.tg_send(text, state=None, force=True)
+        st = U.load_state()
+        st.setdefault("badges", {})["last_revealed"] = {
+            "title": badge.get("title"),
+            "id": badge.get("id"),
+            "serial": badge.get("serial"),
+            "date": U.now_wib().strftime("%Y-%m-%d"),
+        }
+        U.save_state(st)
     except Exception as e:
-        print(f"TG gagal: {e}")
-        return False
+        print(f"catat hasil gagal: {e}")
 
 
 def main():
@@ -89,13 +101,9 @@ def main():
                 break
 
     if verified and verified.get("status") == "revealed":
-        msg = ("🏅 UORM Badge Revealed\n\n"
-               f"Badge: {verified.get('title')} ({verified['id']})\n"
-               f"Serial: {verified.get('serial')}\n"
-               f"Pin slot: {verified.get('pin_slot')}\n"
-               f"Sisa antrean ready: {len(ready) - 1} badge")
-        ok = send_tg(msg)
-        print(f"TERVERIFIKASI revealed, TG terkirim={ok}")
+        catat_hasil(verified)
+        print(f"TERVERIFIKASI revealed: {verified.get('title')} "
+              f"(serial {verified.get('serial')}) — masuk laporan harian")
         return 0
 
     print(f"GAGAL VERIFIKASI: status setelah reveal = "

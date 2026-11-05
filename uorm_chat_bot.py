@@ -138,6 +138,7 @@ def daily_count(st):
         st["daily_qualifying"] = 0
         st["daily_global"] = 0
         st["daily_room"] = 0
+        st["daily_xp"] = 0
         save_state(st)
     return st.get("daily_qualifying", 0)
 
@@ -519,6 +520,7 @@ def main():
                         xp = res.get("xp_delta") or 0
                         st["total_chats"] += 1
                         st["total_xp"] += xp
+                        st["daily_xp"] = st.get("daily_xp", 0) + xp
                         st["last_send_ts"] = time.time()
                         st["last_src"] = "ambient"
                         send_window.append(time.time())
@@ -592,6 +594,7 @@ def main():
                 awarded = res.get("awarded", False)
                 st["total_chats"] += 1
                 st["total_xp"] += xp
+                st["daily_xp"] = st.get("daily_xp", 0) + xp
                 st["last_send_ts"] = time.time()
                 st["last_src"] = src
                 send_window.append(time.time())   # tracker limit 12/30s

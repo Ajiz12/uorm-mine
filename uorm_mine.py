@@ -63,6 +63,9 @@ BOOST_MAX_PER_DAY = 2                  # server limit 2/hari — slot di atas = 
 TG_MAX_PER_DAY = 1                  # notif Telegram per hari (notif biasa)
                                      # laporan status & boost selalu force=True
 
+# Kuota pesan qualifying chat per hari (server: +0.5% rate/level, cap 30 pesan)
+DAILY_QUALIFYING_CAP = 30
+
 
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
@@ -173,6 +176,17 @@ DEFAULT_STATE = {
         "last_rank_id": None,
     },
 }
+
+
+def load_chat_state() -> dict:
+    """Baca state bot chat (uorm_chat_state.json) buat laporan. Read-only."""
+    path = BASE_DIR / "uorm_chat_state.json"
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("[laporan] baca chat state gagal: %s", e)
+    return {}
 
 
 def load_state() -> dict:
@@ -686,11 +700,7 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None,
     if rows and not rows[0].get("claimed") and _session_expired(rows[0], now):
         amt = claim_mining(client, state, rows[0].get("id"))
         if amt > 0:
-            tg_send(
-                f"⛏️ <b>UORM Mining Claim</b>\n"
-                f"Sesi 24 jam selesai — dapat <b>{_fmt_coins(amt)} UORM</b>",
-                state, force=True,
-            )
+            log.info("[mining] sesi 24 jam selesai — klaim %s UORM", _fmt_coins(amt))
 
     # start sesi baru
     log.info("[mining] tidak aktif — start via RPC start_mining_session")
@@ -701,12 +711,7 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None,
         m["started_at"] = datetime.now(timezone.utc).isoformat()
         m["session_id"] = res.get("id") or res.get("session_id")
         m["rate_per_hour"] = res.get("rate_per_hour", m.get("rate") or 1.371825)
-        tg_send(
-            f"▶️ <b>UORM Mining Mulai</b>\n"
-            f"Rate: {_fmt_coins(m['rate_per_hour'])} UORM/jam\n"
-            f"Siklus 24 jam — claim otomatis.",
-            state, force=True,
-        )
+        log.info("[mining] mulai: rate %s UORM/jam", _fmt_coins(m["rate_per_hour"]))
         return True
     if isinstance(res, dict) and "message" in res:
         msg = res["message"].lower()
@@ -779,14 +784,8 @@ def check_daily_bonus(client: SupabaseClient, state: dict):
     db["total_claimed"] += amount
     save_state(state)
 
-    log.info("[daily bonus] BERHASIL klaim %s UORM", _fmt_coins(amount))
-    tg_send(
-        f"🎁 <b>UORM Daily Bonus</b>\n"
-        f"Streak: hari ke-{db['streak_day']}\n"
-        f"Hadiah: {_fmt_coins(amount)} UORM\n"
-        f"Waktu: {now_wib().strftime('%d %b %Y %H:%M')} WIB",
-        state, force=True,
-    )
+    log.info("[daily bonus] BERHASIL klaim %s UORM (streak hari ke-%s)",
+             _fmt_coins(amount), db["streak_day"])
 
 
 # FITUR 2 — LUCKY BOX 4 JAM
@@ -836,14 +835,6 @@ def check_lucky_box(client: SupabaseClient, state: dict):
         log.info("[luckybox] CLAIM BERHASIL: %s UORM (next %s)",
                  _fmt_coins(lb["last_amount"]),
                  datetime.fromtimestamp(lb["next_claim"], tz=WIB).strftime("%H:%M WIB"))
-        tg_send(
-            f"🎁 <b>UORM Lucky Box</b>\n"
-            f"Klaim #{lb['total_claims']} berhasil!\n"
-            f"Hadiah: {_fmt_coins(lb['last_amount'])} UORM\n"
-            f"Total saldo: {_fmt_coins(res.get('total_coins', 0))} UORM\n"
-            f"Claim lagi: {datetime.fromtimestamp(lb['next_claim'], tz=WIB).strftime('%H:%M')} WIB",
-            state, force=True,
-        )
     else:
         # gagal — jangan spam, coba lagi 30 menit
         lb["next_claim"] = now + 1800
@@ -968,10 +959,6 @@ def sync_missions(client: SupabaseClient, state: dict):
         for mid, r in baru:
             ms["completed"].append(mid)
         log.info("[misi] %d misi selesai, total reward +%s", len(baru), total)
-        tg_send(
-            f"✅ <b>UORM Misi</b>\n{len(baru)} misi selesai\nReward: +{total} koin",
-            state,
-        )
     ms["last_sync"] = now_ts()
 
 
@@ -1003,11 +990,6 @@ def claim_bundles(client: SupabaseClient, state: dict):
             bn[period] = {"last_claim": now_ts(), "last_amount": amt}
             save_state(state)
             log.info("[bundle] CLAIM %s BERHASIL: %s UORM", period, amt)
-            tg_send(
-                f"🎁 <b>UORM Bonus Bundle {period.title()}</b>\n"
-                f"Bonus: +{_fmt_coins(amt)} UORM",
-                state, force=True,
-            )
         elif isinstance(body, dict) and "not complete" in (body.get("message") or "").lower():
             log.info("[bundle] %s belum lengkap (%s UORM menunggu)",
                      period, amounts.get(period))
@@ -1184,13 +1166,8 @@ def check_balance_growth(client: SupabaseClient, state: dict):
 
     if elapsed >= 24 * 3600:
         if growth < 0.4:
-            tg_send(
-                f"⚠️ <b>UORM Saldo Macet</b>\n"
-                f"24 jam terakhir cuma nambah {growth:.4f}\n"
-                f"Saldo: {total}\n"
-                f"Mining mungkin berhenti — cek bot.",
-                state, force=True,
-            )
+            log.warning("[saldo] MACET: 24 jam terakhir cuma nambah %.4f (saldo %s)",
+                        growth, total)
         # reset window
         b["window_start"] = now
         b["window_min"] = total
@@ -1264,23 +1241,44 @@ def _boost_slot_berikutnya() -> str:
 
 def send_status_report(client: SupabaseClient, state: dict, force: bool = False):
     """
-    Kirim laporan status UORM ke Telegram.
-    Interval: setiap 4 jam, atau force=True.
+    Kirim laporan grinding UORM ke Telegram — SATU-SATUNYA notif rutin.
+    Interval: sekali sehari (setelah grinding selesai), atau force=True.
     """
     now = now_ts()
     rp = state["report"]
 
-    if not force and rp["last_sent"] and now - rp["last_sent"] < REPORT_INTERVAL:
-        return False
+    # sekali sehari: cegah dobel kirim di hari yang sama (WIB)
+    if not force and rp["last_sent"]:
+        last_day = datetime.fromtimestamp(rp["last_sent"], tz=WIB).strftime("%Y-%m-%d")
+        if last_day == now_wib().strftime("%Y-%m-%d"):
+            return False
 
     uid = client.tokens.get("user_id")
 
-    # ── saldo & rank dari profiles ──
+    # ── profil: level, xp, streak, saldo, rank ──
     prof = client.rest_get("profiles", {
-        "select": "total_coins,rank_id", "id": f"eq.{uid}", "limit": 1,
+        "select": "total_coins,rank_id,level,xp,chat_streak_days,streak_count",
+        "id": f"eq.{uid}", "limit": 1,
     }) or []
-    total_coins = prof[0].get("total_coins", 0) if prof else 0
-    rank_id = prof[0].get("rank_id", "-") if prof else "-"
+    if prof:
+        p = prof[0]
+        total_coins = p.get("total_coins", 0) or 0
+        rank_id = p.get("rank_id", "-") or "-"
+        level = p.get("level", 0) or 0
+        xp = p.get("xp", 0) or 0
+        streak = p.get("chat_streak_days", 0) or 0
+    else:
+        total_coins, rank_id, level, xp, streak = 0, "-", 0, 0, 0
+
+    # ── chat hari ini (dari state bot chat) ──
+    chat = load_chat_state()
+    chat_global = chat.get("daily_global", 0)
+    chat_room = chat.get("daily_room", 0)
+    chat_qualifying = chat.get("daily_qualifying", 0)
+    chat_xp = chat.get("daily_xp", 0)
+    chat_total = chat.get("total_chats", 0)
+    # sisa kuota jangan negatif — kalau server salah hitung, tampilkan 0
+    sisa_kuota = max(0, DAILY_QUALIFYING_CAP - chat_qualifying)
 
     # ── boost status ──
     boost_aktif = _boost_aktif(state)
@@ -1295,14 +1293,10 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
     lb_amount = lb.get("last_amount", 0.0)
     if lb["next_claim"] and now < lb["next_claim"]:
         jam_next = datetime.fromtimestamp(lb["next_claim"], tz=WIB).strftime("%H:%M")
-        lb_line = f"{_fmt_coins(lb_amount)} UORM"
     else:
         jam_next = "sekarang"
-        lb_line = f"{_fmt_coins(lb_amount)} UORM"
 
     # ── leaderboard posisi (hitung LIVE saat laporan dikirim) ──
-    # Jangan pakai state["leaderboard"]: bisa basi sampai LEADERBOARD_INTERVAL
-    # dan laporan menyebut posisi lama padahal user baru saja klaim.
     ldb = state["leaderboard"]
     lb_pos = "-"
     try:
@@ -1311,7 +1305,6 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
             above_live = count_profiles_above(client, my_coins_live)
             if above_live is not None:
                 lb_pos = f"#{above_live + 1}"
-                # simpan supaya state ikut segar
                 ldb["my_coins"] = my_coins_live
                 ldb["my_rank"] = above_live + 1
                 ldb["last_update"] = now
@@ -1320,22 +1313,26 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
     if lb_pos == "-" and ldb.get("my_rank"):
         lb_pos = f"#{ldb['my_rank']}"
 
-    rank_baru = rank_id != rp.get("last_rank_id")
+    # ── badge ter-reveal hari ini ──
+    badge = state.get("badges", {}).get("last_revealed")
+    if badge and badge.get("date") == now_wib().strftime("%Y-%m-%d"):
+        badge_line = f"🏅 Badge: {badge.get('title')} ({badge.get('serial')})"
+    else:
+        badge_line = None
+
     rp["last_rank_id"] = rank_id
     rp["last_sent"] = now
 
     text = (
-        "LAPOR BOSKUHHHH\n"
+        "📊 <b>UORM HARI INI</b>\n"
         "\n"
-        "UORM MINING BERHASIL ✅\n"
-        "\n"
-        f"💵 Total saldo: {_fmt_coins(total_coins)} UORM\n"
-        f"📈 Mining boost: {'✅ Aktif' if boost_aktif else '❎ Tidak Aktif'}\n"
-        f"📊 Kotak keberuntungan: {lb_line}\n"
-        f"🥇 Peringkat: {rank_id}\n"
-        f"🚀 Leadboard: {lb_pos}\n"
-        "\n"
-        f"🤖 Next claim lucky box  {jam_next} WIB"
+        f"💬 Chat: {chat_total} pesan (XP {chat_xp}) | Kuota: {sisa_kuota}\n"
+        f"👤 Lv.{level} · {xp} XP · Streak {streak}h\n"
+        f"💵 Saldo: {_fmt_coins(total_coins)} UORM\n"
+        f"📈 Boost: {'✅' if boost_aktif else '❌'} ({boost_used}/{boost_limit}) | 🎁 Box: {_fmt_coins(lb_amount)}\n"
+        f"🥇 {rank_id.title()} · 🚀 {lb_pos}\n"
+        + (f"{badge_line}\n" if badge_line else "")
+        + f"⏰ Next claim: {jam_next} WIB"
     )
 
     return tg_send(text, state, force=True)
@@ -1394,13 +1391,9 @@ def auto_boost(client: SupabaseClient, state: dict):
     if boost_mining(client, state):
         state["mining"]["boost_claimed_today"] = used + 1
         state["mining"].setdefault("boost_slot_used", {})[str(slot_idx)] = True
-        tg_send(
-            f"📈 <b>UORM Boost Aktif</b>\n"
-            f"Waktu: {now_wib().strftime('%H:%M')} WIB\n"
-            f"Rate: {state['mining'].get('rate_per_hour')} UORM/jam\n"
-            f"Slot boost: {used + 1}/{limit} hari ini",
-            state, force=True,
-        )
+        log.info("[boost] AKTIF %s WIB — rate %s UORM/jam (slot %d/%d)",
+                 now_wib().strftime("%H:%M"),
+                 state["mining"].get("rate_per_hour"), used + 1, limit)
 
 
 # ═══════════════════════════════════════════════════════════════
