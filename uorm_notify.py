@@ -15,13 +15,14 @@ Target volume harian (perintah bos 29 Okt 2026):
 
 Reset kuota XP server = UTC-day (00:00 UTC = 07:00 WIB).
 """
-import sys, json, urllib.request
+import sys, json, os, urllib.request
 from datetime import datetime, timezone, timedelta
-sys.path.insert(0, 'uorm-mine')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import uorm_mine as U
 
-MY = '<your-user-uuid>'
-ROOM = '<your-room-id>'
+# MY diisi di main() dari user_id akun login (token), BUKAN hardcoded.
+MY = None
+ROOM = U.cfg("UORM_ROOM_ID", "")
 DAILY_CAP = 30
 TIERS = [(5, 8), (15, 5), (30, 3)]
 WIB = timezone(timedelta(hours=7))
@@ -59,7 +60,12 @@ def xp_for(count):
 
 
 def main():
+    global MY
     c = U.SupabaseClient()
+    MY = c.tokens.get('user_id')
+    if not MY:
+        print('GAGAL: tidak ada user_id login di token, laporan tidak dikirim')
+        return
     now_utc = datetime.now(timezone.utc)
     today = now_utc.strftime('%Y-%m-%d')
     yesterday = (now_utc - timedelta(days=1)).strftime('%Y-%m-%d')

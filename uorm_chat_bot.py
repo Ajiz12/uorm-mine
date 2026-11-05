@@ -24,9 +24,12 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE, "uorm_chat_state.json")
 LOG_FILE = os.path.join(BASE, "logs", "uorm_chat.log")
 
-ROOM_ID = "<your-room-id>"
-MY_USER_ID = "<your-user-uuid>"
-COOLDOWN = 90           # detik antar chat (aturan bos — aman, di atas limit resmi 2s)
+ROOM_ID = U.cfg("UORM_ROOM_ID", "")
+# ID akun login dari token, BUKAN hardcoded: kalau hardcoded, filter pesan
+# sendiri nggak jalan dan bot malah balas pesannya sendiri.
+MY_USER_ID = U.load_tokens().get("user_id")
+COOLDOWN_RAME = 90        # detik antar chat kalau grup ramai (ada pesan baru)
+COOLDOWN_SEPI = 120       # detik antar chat kalau grup sepi (nggak ada yang bisa di-reply)
 POLL = 15               # detik cek pesan baru
 MAX_HISTORY = 120       # simpan N konten terakhir buat anti-duplikat
 
@@ -157,7 +160,9 @@ def sync_daily_from_db(st):
         c = U.SupabaseClient()
         now_utc = datetime.now(timezone.utc)
         day_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-        since = day_start.isoformat()
+        # Sufiks Z, bukan +00:00: '+' di URL mentah dibaca server sebagai
+        # spasi sehingga timestamp invalid dan server balas error dict.
+        since = day_start.strftime("%Y-%m-%dT00:00:00Z")
         g = c.session.get(
             f"{U.SUPABASE_URL}/rest/v1/global_messages"
             f"?user_id=eq.{MY_USER_ID}&select=id&created_at=gte.{since}",
@@ -166,6 +171,9 @@ def sync_daily_from_db(st):
             f"{U.SUPABASE_URL}/rest/v1/room_messages"
             f"?user_id=eq.{MY_USER_ID}&room_id=eq.{ROOM_ID}&select=id&created_at=gte.{since}",
             timeout=30).json()
+        if not isinstance(g, list) or not isinstance(r, list):
+            log(f"sync_daily_from_db gagal: respon bukan list: {str(g)[:120]} / {str(r)[:120]}")
+            return None, None
         st["daily_global"] = len(g)
         st["daily_room"] = len(r)
         st["daily_qualifying"] = len(g) + len(r)
@@ -185,7 +193,7 @@ def fetch_qualified_today():
     try:
         c = U.SupabaseClient()
         since = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0).isoformat()
+            hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT00:00:00Z")
         g = c.session.get(
             f"{U.SUPABASE_URL}/rest/v1/global_messages"
             f"?user_id=eq.{MY_USER_ID}&select=id&created_at=gte.{since}",
@@ -194,6 +202,9 @@ def fetch_qualified_today():
             f"{U.SUPABASE_URL}/rest/v1/room_messages"
             f"?user_id=eq.{MY_USER_ID}&room_id=eq.{ROOM_ID}&select=id&created_at=gte.{since}",
             timeout=30).json()
+        if not isinstance(g, list) or not isinstance(r, list):
+            log("fetch_qualified_today gagal: respon bukan list")
+            return None
         return len(g) + len(r)
     except Exception as e:
         log(f"fetch_qualified_today gagal: {e}")
@@ -453,7 +464,7 @@ def main():
             f"total={g_n + r_n}/{DAILY_QUALIFYING_CAP} qualifying")
 
     # aturan resmi "Sending limits": maksimal 12 pesan per 30 detik
-    # (dihitung Global + Room digabung). Cooldown 90s sudah aman, tapi
+    # (dihitung Global + Room digabung). Cooldown 90/120s sudah aman, tapi
     # tracker ini jaga-jaga kalau ada pesan manual/eksternal yang ikut hitung.
     send_window = []   # timestamp kirim dalam 30 detik terakhir
     last_sync_day = st.get("daily_sync_utc")
@@ -461,7 +472,10 @@ def main():
     while True:
         try:
             now = time.time()
-            wait = COOLDOWN - (now - st["last_send_ts"])
+            # cooldown adaptif: ramai (ada pesan baru yang bisa di-reply) → 90s,
+            # sepi (nggak ada yang bisa di-reply, kirim ambient) → 120s.
+            cooldown = COOLDOWN_SEPI if st.get("last_src") == "ambient" else COOLDOWN_RAME
+            wait = cooldown - (now - st["last_send_ts"])
             if wait > 0:
                 time.sleep(min(wait, POLL))
                 continue
@@ -506,7 +520,7 @@ def main():
                         st["total_chats"] += 1
                         st["total_xp"] += xp
                         st["last_send_ts"] = time.time()
-                        st["last_src"] = src
+                        st["last_src"] = "ambient"
                         send_window.append(time.time())
                         n = daily_count(st) + 1
                         st["daily_qualifying"] = n
