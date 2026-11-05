@@ -737,6 +737,17 @@ def check_mining(client: SupabaseClient, state: dict, schema: dict = None,
 
     log.warning("[mining] gagal start: %s %s — akan coba lagi nanti",
                 status, str(res)[:150])
+    # notif kritis — mining nggak jalan = saldo nggak nambah. Sekali per 6 jam.
+    st = state["mining"]
+    now = now_ts()
+    if now - st.get("start_fail_alerted", 0) > 6 * 3600:
+        tg_send(
+            "❌ UORM Mining Gagal Start\n"
+            f"Error: {status} {str(res)[:120]}\n"
+            "Sesi baru tidak bisa dimulai — cek pm2 logs uorm-mine.",
+            state, force=True,
+        )
+        st["start_fail_alerted"] = now
     return False
 
 
@@ -1181,6 +1192,17 @@ def check_balance_growth(client: SupabaseClient, state: dict):
         if growth < 0.4:
             log.warning("[saldo] MACET: 24 jam terakhir cuma nambah %.4f (saldo %s)",
                         growth, total)
+            # notif kritis — saldo macet = mining nggak jalan, kirim sekali per window
+            if not b.get("macet_alerted"):
+                tg_send(
+                    "⚠️ UORM Saldo Macet\n"
+                    f"24 jam terakhir cuma nambah {_fmt_coins(growth)} UORM.\n"
+                    "Mining kemungkinan nggak jalan — cek pm2 logs uorm-mine.",
+                    state, force=True,
+                )
+                b["macet_alerted"] = True
+        else:
+            b["macet_alerted"] = False
         # reset window
         b["window_start"] = now
         b["window_min"] = total
@@ -1475,7 +1497,17 @@ def main():
     while True:
         try:
             # token refresh tiap iterasi
-            client.ensure_token()
+            if not client.ensure_token():
+                # auth gagal — mining & semua RPC mati. Notif sekali per kejadian.
+                log.error("[auth] token refresh gagal — loop tidak bisa lanjut")
+                tg_send(
+                    "❌ UORM Auth Gagal\n"
+                    "Token tidak bisa di-refresh. Mining berhenti.\n"
+                    "Perlu login ulang: python3 uorm_mine.py --login",
+                    state, force=True,
+                )
+                time.sleep(300)
+                continue
 
             # 1. mining (interval 4 jam — bareng lucky box & boost)
             mining_ok = check_mining(client, state, schema, force=True)
