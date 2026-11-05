@@ -54,7 +54,10 @@ REPORT_INTERVAL = 4 * 3600             # 4 jam — notif status berkala
 TOKEN_REFRESH_MARGIN = 300             # refresh 5 menit sebelum expired
 
 # Boost mining — jadwal WIB (2 slot/hari, TIDAK di luar jam ini)
-BOOST_SLOTS_WIB = [(8, 9), (13, 14)]   # 08:00-08:59 & 13:00-13:59 WIB
+# 1 boost per slot: pagi 08:00-10:59, siang 12:00-15:59.
+# Slot sengaja dilebar biar boost #2 nggak kepicu di slot pagi (numpuk),
+# tapi kepakai di periode berbeda dalam sehari.
+BOOST_SLOTS_WIB = [(8, 11), (12, 16)]  # pagi & siang WIB
 BOOST_MAX_PER_DAY = 2                  # server limit 2/hari — slot di atas = 2
 
 TG_MAX_PER_DAY = 1                  # notif Telegram per hari (notif biasa)
@@ -1229,15 +1232,24 @@ def _reset_boost_harian(state: dict):
     if m.get("boost_last_date") != hari_ini:
         m["boost_last_date"] = hari_ini
         m["boost_claimed_today"] = 0
+        m["boost_slot_used"] = {}   # slot -> sudah dipakai hari ini (1 boost/slot)
         # boost_expires_at basi dari hari sebelumnya → anggap tidak aktif
         if not _boost_aktif(state):
             m["boost_expires_at"] = None
 
 
-def _boost_slot_sekarang() -> bool:
-    """True kalau sekarang jatuh di slot boost (08-09 atau 13-14 WIB)."""
+def _boost_slot_index() -> int:
+    """Index slot boost sekarang (0 = pagi, 1 = siang). -1 kalau di luar slot."""
     h = now_wib().hour
-    return any(start <= h < end for start, end in BOOST_SLOTS_WIB)
+    for i, (start, end) in enumerate(BOOST_SLOTS_WIB):
+        if start <= h < end:
+            return i
+    return -1
+
+
+def _boost_slot_sekarang() -> bool:
+    """True kalau sekarang jatuh di slot boost (pagi atau siang WIB)."""
+    return _boost_slot_index() >= 0
 
 
 def _boost_slot_berikutnya() -> str:
@@ -1353,11 +1365,19 @@ def auto_boost(client: SupabaseClient, state: dict):
         return
 
     # di luar jam boost → jangan klaim
-    if not _boost_slot_sekarang():
+    slot_idx = _boost_slot_index()
+    if slot_idx < 0:
         return
 
     # guard lokal: kalau state bilang sudah 2x hari ini, jangan panggil RPC
     if state["mining"].get("boost_claimed_today", 0) >= BOOST_MAX_PER_DAY:
+        return
+
+    # guard per-slot: 1 slot = 1 boost, biar nggak numpuk di slot pagi
+    slot_used = state["mining"].setdefault("boost_slot_used", {})
+    if slot_used.get(str(slot_idx)):
+        log.info("[boost] slot %s sudah dipakai hari ini — tunggu slot berikutnya (%s)",
+                 f"{now_wib().strftime('%H:%M')} WIB", _boost_slot_berikutnya())
         return
 
     st = client.rpc("get_boost_status")
@@ -1373,6 +1393,7 @@ def auto_boost(client: SupabaseClient, state: dict):
              f"{now_wib().strftime('%H:%M')} WIB", used, limit)
     if boost_mining(client, state):
         state["mining"]["boost_claimed_today"] = used + 1
+        state["mining"].setdefault("boost_slot_used", {})[str(slot_idx)] = True
         tg_send(
             f"📈 <b>UORM Boost Aktif</b>\n"
             f"Waktu: {now_wib().strftime('%H:%M')} WIB\n"
