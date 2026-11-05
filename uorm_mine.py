@@ -1313,12 +1313,26 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
     if lb_pos == "-" and ldb.get("my_rank"):
         lb_pos = f"#{ldb['my_rank']}"
 
-    # ── badge ter-reveal hari ini ──
-    badge = state.get("badges", {}).get("last_revealed")
-    if badge and badge.get("date") == now_wib().strftime("%Y-%m-%d"):
-        badge_line = f"🏅 Badge: {badge.get('title')} ({badge.get('serial')})"
-    else:
-        badge_line = None
+    # ── badge: total + ter-reveal hari ini ──
+    badge_total, badge_revealed, badge_line = 0, 0, None
+    bg = client.rpc("get_my_badges")
+    if isinstance(bg, dict):
+        badges = bg.get("badges", [])
+        badge_total = len(badges)
+        badge_revealed = sum(1 for b in badges if b.get("status") == "revealed")
+    last_badge = state.get("badges", {}).get("last_revealed")
+    if last_badge and last_badge.get("date") == now_wib().strftime("%Y-%m-%d"):
+        badge_line = f"🏅 Hari ini: {last_badge.get('title')} ({last_badge.get('serial')})"
+
+    # ── mining: sesi aktif + sesi terakhir sudah di-claim? ──
+    mining_aktif = bool(state.get("mining", {}).get("active"))
+    sesi_claim = "-"
+    try:
+        rows = client.rest_get("mining_sessions", {"select": "claimed", "limit": 1}) or []
+        if rows:
+            sesi_claim = "✅" if rows[0].get("claimed") else "❌"
+    except Exception as e:
+        log.warning("[laporan] cek sesi mining gagal: %s", e)
 
     rp["last_rank_id"] = rank_id
     rp["last_sent"] = now
@@ -1326,13 +1340,19 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
     text = (
         "📊 <b>UORM HARI INI</b>\n"
         "\n"
-        f"💬 Chat: {chat_total} pesan (XP {chat_xp}) | Kuota: {sisa_kuota}\n"
-        f"👤 Lv.{level} · {xp} XP · Streak {streak}h\n"
         f"💵 Saldo: {_fmt_coins(total_coins)} UORM\n"
-        f"📈 Boost: {'✅' if boost_aktif else '❌'} ({boost_used}/{boost_limit}) | 🎁 Box: {_fmt_coins(lb_amount)}\n"
+        f"📈 Boost: {'✅' if boost_aktif else '❌'} ({boost_used}/{boost_limit})\n"
+        f"🎁 Box: {_fmt_coins(lb_amount)}\n"
         f"🥇 {rank_id.title()} · 🚀 {lb_pos}\n"
+        f"🎖️ Total Badge: {badge_total} ({badge_revealed} revealed)\n"
         + (f"{badge_line}\n" if badge_line else "")
-        + f"⏰ Next claim: {jam_next} WIB"
+        + f"💬 Chat: {chat_total} pesan\n"
+        f"👤 Lv {level} &amp; Total XP: {xp}\n"
+        f"🗣️ Streak Chat: {streak}h\n"
+        f"🚨 Mining Claim: {sesi_claim}\n"
+        f"💎 Mining Start: {'✅' if mining_aktif else '❌'}\n"
+        "\n"
+        f"⏰ Next Claim: {jam_next} WIB"
     )
 
     return tg_send(text, state, force=True)
