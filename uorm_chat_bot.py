@@ -92,6 +92,15 @@ def log(msg):
         pass
 
 
+def tg_notify(text):
+    """Notif Telegram langsung (tanpa rate limit harian) — event per-event."""
+    try:
+        return U.tg_send(text, force=True)
+    except Exception as e:
+        log(f"tg_notify gagal: {e}")
+        return False
+
+
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -139,6 +148,7 @@ def daily_count(st):
         st["daily_global"] = 0
         st["daily_room"] = 0
         st["daily_xp"] = 0
+        st["target_done_notified"] = False   # notif target penuh: sekali/hari
         save_state(st)
     return st.get("daily_qualifying", 0)
 
@@ -616,6 +626,18 @@ def main():
                     f"| xp+{xp} awarded={awarded} | harian {n}/{DAILY_QUALIFYING_CAP} "
                     f"(tier {expected}) | global {st['daily_global']}/{GLOBAL_DAILY_MAX} "
                     f"room {st['daily_room']}/{ROOM_DAILY_MAX} total_xp={st['total_xp']}")
+                # notif sekali sehari pas target harian penuh (100 global + 30 room)
+                if (st['daily_global'] >= GLOBAL_DAILY_MAX
+                        and st['daily_room'] >= ROOM_DAILY_MAX
+                        and not st.get('target_done_notified')):
+                    st['target_done_notified'] = True
+                    save_state(st)
+                    tg_notify(
+                        f"💬 Chat Grinding Selesai\n"
+                        f"Global: {st['daily_global']}/{GLOBAL_DAILY_MAX} • "
+                        f"Room: {st['daily_room']}/{ROOM_DAILY_MAX}\n"
+                        f"XP hari ini: +{st.get('daily_xp', 0)}")
+                    log("target harian penuh — notif terkirim")
             else:
                 msg = res.get("message") or res.get("raw") or str(res)[:100]
                 log(f"kirim gagal ({code}): {msg}")

@@ -810,6 +810,12 @@ def check_daily_bonus(client: SupabaseClient, state: dict):
 
     log.info("[daily bonus] BERHASIL klaim %s UORM (streak hari ke-%s)",
              _fmt_coins(amount), db["streak_day"])
+    # notif terpisah — dikirim SESUDAH klaim beneran masuk
+    tg_send(
+        f"📅 Daily Bonus: +{_fmt_coins(amount)} UORM\n"
+        f"Streak hari ke-{db['streak_day']}",
+        state, force=True,
+    )
 
 
 # FITUR 2 — LUCKY BOX 4 JAM
@@ -859,6 +865,13 @@ def check_lucky_box(client: SupabaseClient, state: dict):
         log.info("[luckybox] CLAIM BERHASIL: %s UORM (next %s)",
                  _fmt_coins(lb["last_amount"]),
                  datetime.fromtimestamp(lb["next_claim"], tz=WIB).strftime("%H:%M WIB"))
+        # notif terpisah — dikirim SESUDAH klaim beneran masuk
+        tg_send(
+            f"🎁 Lucky Box: +{_fmt_coins(lb['last_amount'])} UORM\n"
+            f"Klaim ke-{lb['total_claims']} • next "
+            f"{datetime.fromtimestamp(lb['next_claim'], tz=WIB).strftime('%H:%M WIB')}",
+            state, force=True,
+        )
     else:
         # gagal — jangan spam, coba lagi 30 menit
         lb["next_claim"] = now + 1800
@@ -987,6 +1000,14 @@ def sync_missions(client: SupabaseClient, state: dict):
         ms["claimed_today"] = sorted(claimed_today)
         ms["completed"] = sorted(claimed_today)
         log.info("[misi] %d misi selesai, total reward +%s", len(baru), total)
+        # notif terpisah per misi — dikirim SESUDAH klaim beneran masuk
+        for mid, reward in baru:
+            nama = catalog.get(mid, {}).get("title") or mid
+            tg_send(
+                f"✅ Misi Selesai: {nama}\n"
+                f"Reward: +{_fmt_coins(reward)} UORM",
+                state, force=True,
+            )
     ms["last_sync"] = now_ts()
 
 
@@ -1018,6 +1039,11 @@ def claim_bundles(client: SupabaseClient, state: dict):
             bn[period] = {"last_claim": now_ts(), "last_amount": amt}
             save_state(state)
             log.info("[bundle] CLAIM %s BERHASIL: %s UORM", period, amt)
+            # notif terpisah — dikirim SESUDAH klaim beneran masuk
+            tg_send(
+                f"🏆 Bundle {period.title()} Claim: +{_fmt_coins(amt)} UORM",
+                state, force=True,
+            )
         elif isinstance(body, dict) and "not complete" in (body.get("message") or "").lower():
             log.info("[bundle] %s belum lengkap (%s UORM menunggu)",
                      period, amounts.get(period))
