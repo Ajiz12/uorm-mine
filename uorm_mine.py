@@ -866,9 +866,17 @@ def check_lucky_box(client: SupabaseClient, state: dict):
                  _fmt_coins(lb["last_amount"]),
                  datetime.fromtimestamp(lb["next_claim"], tz=WIB).strftime("%H:%M WIB"))
         # notif terpisah — dikirim SESUDAH klaim beneran masuk
+        # Total saldo = saldo SEBELUM klaim + hasil lucky box (akumulasi klaim ini)
+        saldo_live = _get_total_coins(client)
+        if saldo_live is not None:
+            total_saldo = saldo_live + lb["last_amount"]
+            _fmt_coins_cache = _fmt_coins(total_saldo)
+        else:
+            _fmt_coins_cache = "-"
         tg_send(
-            f"🎁 Lucky Box: +{_fmt_coins(lb['last_amount'])} UORM\n"
-            f"Klaim ke-{lb['total_claims']} • next "
+            f"🎁 Lucky Box: {_fmt_coins(lb['last_amount'])} UORM\n"
+            f"📈 Total Saldo: {_fmt_coins_cache} UORM\n"
+            f"🕙 Next Claim: "
             f"{datetime.fromtimestamp(lb['next_claim'], tz=WIB).strftime('%H:%M WIB')}",
             state, force=True,
         )
@@ -1192,6 +1200,21 @@ def update_leaderboard(client: SupabaseClient, state: dict, force: bool = False)
 # ═══════════════════════════════════════════════════════════════
 # MONITOR SALDO 24 JAM
 # ═══════════════════════════════════════════════════════════════
+
+def _get_total_coins(client: SupabaseClient):
+    """Saldo total terkini dari server (None kalau gagal)."""
+    try:
+        rows = client.rest_get("profiles", {
+            "select": "total_coins",
+            "id": f"eq.{client.tokens.get('user_id')}",
+            "limit": 1,
+        })
+        if rows:
+            return float(rows[0].get("total_coins") or 0)
+    except Exception as e:
+        log.warning("[saldo] gagal ambil total_coins: %s", e)
+    return None
+
 
 def check_balance_growth(client: SupabaseClient, state: dict):
     """Alert kalau saldo tidak nambah dalam 24 jam."""
