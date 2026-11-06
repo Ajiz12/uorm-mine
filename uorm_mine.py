@@ -1390,19 +1390,13 @@ def send_status_report(client: SupabaseClient, state: dict, force: bool = False)
     rp["last_sent"] = now
 
     text = (
-        "📊 UORM HARI INI\n"
+        "📊 UORM Daily Report\n"
         "\n"
         f"💵 Saldo: {_fmt_coins(total_coins)} UORM\n"
-        f"📈 Bonus Harian: {_fmt_coins(bonus_amount)}\n"
-        f"🎁 Box: {_fmt_coins(lb_amount)}\n"
-        f"🥇 {rank_id.title()} · 🚀 {lb_pos}\n"
+        f"🚀 Peringkat: {lb_pos.lstrip('#')}\n"
         f"🎖️ Total Badge: {badge_revealed}\n"
-        + (f"{badge_line}\n" if badge_line else "")
-        + f"💬 Chat: {chat_total} pesan\n"
-        f"👤 Lv {level} & Total XP: {xp}\n"
-        f"🗣️ Streak Chat: {streak}h\n"
-        "\n"
-        f"⏰ Next Claim: {jam_next} WIB"
+        f"🗣️ Level Chat: {level}\n"
+        f"📇 Jabatan: {rank_id.title()}"
     )
 
     return tg_send(text, state, force=True)
