@@ -980,8 +980,12 @@ def sync_missions(client: SupabaseClient, state: dict):
     if baru:
         total = sum(r for _, r in baru)
         ms["total_reward"] += total
-        for mid, r in baru:
-            ms["completed"].append(mid)
+        # simpan sebagai SET hari ini — append-only bikin state membengkak
+        # (39 entri duplikat dalam 2 hari) dan nggak dipakai buat apa pun.
+        claimed_today = set(ms.get("claimed_today") or [])
+        claimed_today.update(mid for mid, _ in baru)
+        ms["claimed_today"] = sorted(claimed_today)
+        ms["completed"] = sorted(claimed_today)
         log.info("[misi] %d misi selesai, total reward +%s", len(baru), total)
     ms["last_sync"] = now_ts()
 
