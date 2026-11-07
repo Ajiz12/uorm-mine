@@ -59,6 +59,7 @@ TOKEN_REFRESH_MARGIN = 300             # refresh 5 menit sebelum expired
 # tapi kepakai di periode berbeda dalam sehari.
 BOOST_SLOTS_WIB = [(8, 11), (12, 16)]  # pagi & siang WIB
 BOOST_MAX_PER_DAY = 2                  # server limit 2/hari — slot di atas = 2
+BOOST_MIN_GAP = 2 * 3600               # jeda minimal antar boost (detik)
 
 TG_MAX_PER_DAY = 1                  # notif Telegram per hari (notif biasa)
                                      # laporan status & boost selalu force=True
@@ -134,6 +135,7 @@ DEFAULT_STATE = {
         "boost_expires_at": None,
         "boost_multiplier": 1,
         "boost_last_date": None,
+        "boost_last_at": None,
         "boost_claimed_today": 0,
     },
     "lucky_box": {
@@ -1290,6 +1292,23 @@ def _boost_aktif(state: dict) -> bool:
         return False
 
 
+def _boost_gap_cukup(state: dict) -> bool:
+    """
+    True kalau jeda sejak boost terakhir >= BOOST_MIN_GAP (2 jam).
+    boost_last_at = waktu boost terakhir diaktifkan (ISO UTC).
+    Kalau belum ada catatan, anggap cukup (boost pertama).
+    """
+    last = state.get("mining", {}).get("boost_last_at")
+    if not last:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return True
+    elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds()
+    return elapsed >= BOOST_MIN_GAP
+
+
 def _reset_boost_harian(state: dict):
     """Reset counter boost lokal tiap ganti hari WIB (server reset kuota juga)."""
     hari_ini = now_wib().strftime("%Y-%m-%d")
@@ -1298,6 +1317,7 @@ def _reset_boost_harian(state: dict):
         m["boost_last_date"] = hari_ini
         m["boost_claimed_today"] = 0
         m["boost_slot_used"] = {}   # slot -> sudah dipakai hari ini (1 boost/slot)
+        m["boost_last_at"] = None   # jeda minimal antar boost ikut reset
         # boost_expires_at basi dari hari sebelumnya → anggap tidak aktif
         if not _boost_aktif(state):
             m["boost_expires_at"] = None
@@ -1448,6 +1468,19 @@ def auto_boost(client: SupabaseClient, state: dict):
     if _boost_aktif(state):
         return
 
+    # jeda minimal antar boost (2 jam) — cegah numpuk di slot yang sama
+    if not _boost_gap_cukup(state):
+        last = state["mining"].get("boost_last_at")
+        try:
+            last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            sisa = int((last_dt.timestamp() + BOOST_MIN_GAP
+                        - datetime.now(timezone.utc).timestamp()) // 60)
+        except (ValueError, TypeError):
+            sisa = BOOST_MIN_GAP // 60
+        log.info("[boost] jeda %d menit lagi sebelum boost berikutnya "
+                 "(min %d jam)", max(sisa, 0), BOOST_MIN_GAP // 3600)
+        return
+
     # di luar jam boost → jangan klaim
     slot_idx = _boost_slot_index()
     if slot_idx < 0:
@@ -1478,6 +1511,7 @@ def auto_boost(client: SupabaseClient, state: dict):
     if boost_mining(client, state):
         state["mining"]["boost_claimed_today"] = used + 1
         state["mining"].setdefault("boost_slot_used", {})[str(slot_idx)] = True
+        state["mining"]["boost_last_at"] = datetime.now(timezone.utc).isoformat()
         log.info("[boost] AKTIF %s WIB — rate %s UORM/jam (slot %d/%d)",
                  now_wib().strftime("%H:%M"),
                  state["mining"].get("rate_per_hour"), used + 1, limit)
