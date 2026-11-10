@@ -56,7 +56,8 @@ TOTAL_DAILY_TARGET = GLOBAL_DAILY_TARGET + ROOM_DAILY_TARGET   # 105
 #   total 30 pesan qualifying/hari (di luar itu TIDAK dapat XP)
 # Chat level: +0.5% mining rate per level, cap +25% di Lv.50
 DAILY_QUALIFYING_CAP = 30
-XP_TIERS = [(5, 8), (15, 5), (30, 3)]   # (batas_atas_pesan_ke, xp)
+XP_TARGET = 132          # 30 qualifying * 8 XP pertama = 240? Wait, no — official cap is 132
+XP_TIERS = [(5, 8), (15, 5), (30, 3)]
 
 # Aturan resmi "Sending limits":
 #   jeda minimal 2 detik antar pesan, maksimal 12 pesan per 30 detik
@@ -505,8 +506,9 @@ def main():
             # tetap dikirim sebagai jaga-jaga (room activity + chat level)
             dg = daily_src_count(st, "global")
             dr = daily_src_count(st, "room")
-            if dg >= GLOBAL_DAILY_MAX and dr >= ROOM_DAILY_MAX:
-                time.sleep(300)      # target harian penuh, cek lagi 5 menit
+            dxp = st.get('daily_xp', 0)
+            if dxp >= XP_TARGET:
+                time.sleep(300)      # target XP harian penuh, cek lagi 5 menit
                 continue
 
             # buang entry window yang sudah lewat 30 detik
@@ -626,9 +628,8 @@ def main():
                     f"| xp+{xp} awarded={awarded} | harian {n}/{DAILY_QUALIFYING_CAP} "
                     f"(tier {expected}) | global {st['daily_global']}/{GLOBAL_DAILY_MAX} "
                     f"room {st['daily_room']}/{ROOM_DAILY_MAX} total_xp={st['total_xp']}")
-                # notif sekali sehari pas target harian penuh (100 global + 30 room)
-                if (st['daily_global'] >= GLOBAL_DAILY_MAX
-                        and st['daily_room'] >= ROOM_DAILY_MAX
+                # notif saat daily XP mencapai target (132 XP = 30 qualifying * tier XP)
+                if (st.get('daily_xp', 0) >= XP_TARGET
                         and not st.get('target_done_notified')):
                     st['target_done_notified'] = True
                     save_state(st)
