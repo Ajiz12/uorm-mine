@@ -56,7 +56,7 @@ TOTAL_DAILY_TARGET = GLOBAL_DAILY_TARGET + ROOM_DAILY_TARGET   # 105
 #   total 30 pesan qualifying/hari (di luar itu TIDAK dapat XP)
 # Chat level: +0.5% mining rate per level, cap +25% di Lv.50
 DAILY_QUALIFYING_CAP = 30
-XP_TARGET = 132          # 30 qualifying * 8 XP pertama = 240? Wait, no — official cap is 132
+XP_TARGET = 120          # cap XP harian
 XP_TIERS = [(5, 8), (15, 5), (30, 3)]
 
 # Aturan resmi "Sending limits":
