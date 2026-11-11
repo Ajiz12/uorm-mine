@@ -189,6 +189,11 @@ def sync_daily_from_db(st):
         st["daily_global"] = len(g)
         st["daily_room"] = len(r)
         st["daily_qualifying"] = len(g) + len(r)
+        # daily_xp direset ke 0 saat sinkron — nilai lama bisa >132 (warisan
+        # script versi lama yang nyimpan XP kumulatif) dan bikin bot nyangka
+        # target penuh (sleep 300s selamanya). Setelah ini daily_xp terakumulasi
+        # ulang dari xp_delta asli yang dikembalikan server per kirim.
+        st["daily_xp"] = 0
         st["daily_date"] = today_key()
         st["daily_sync_utc"] = day_start.strftime("%Y-%m-%d")
         save_state(st)
