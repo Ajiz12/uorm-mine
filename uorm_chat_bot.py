@@ -96,7 +96,10 @@ def log(msg):
 def tg_notify(text):
     """Notif Telegram langsung (tanpa rate limit harian) — event per-event."""
     try:
-        return U.tg_send(text, force=True)
+        ok = U.tg_send(text, force=True)
+        if not ok:
+            log("tg_notify: U.tg_send mengembalikan False (cek token/chat_id)")
+        return ok
     except Exception as e:
         log(f"tg_notify gagal: {e}")
         return False
