@@ -633,7 +633,7 @@ def main():
                     f"| xp+{xp} awarded={awarded} | harian {n}/{DAILY_QUALIFYING_CAP} "
                     f"(tier {expected}) | global {st['daily_global']}/{GLOBAL_DAILY_MAX} "
                     f"room {st['daily_room']}/{ROOM_DAILY_MAX} total_xp={st['total_xp']}")
-                # notif saat daily XP mencapai target (132 XP = 30 qualifying * tier XP)
+                # notif saat daily XP mencapai target (120 XP)
                 if (st.get('daily_xp', 0) >= XP_TARGET
                         and not st.get('target_done_notified')):
                     st['target_done_notified'] = True
